@@ -35,31 +35,28 @@ use warp::Future;
 use warp::Rejection;
 use warp::{Filter, Reply};
 
-trait IsReject: fmt::Debug + Send + Sync {
+pub trait IsReject: fmt::Debug + Send + Sync {
     fn status(&self) -> StatusCode;
     fn into_response(&self) -> Response;
 }
 
-// #[cfg(feature = "compression")]
-// pub enum CompressionAlgo {
-//     BR,
-//     DEFLATE,
-//     GZIP,
-// }
+#[cfg(feature = "compression")]
+pub enum CompressionAlgo {
+    BR,
+    DEFLATE,
+    GZIP,
+}
 
-// impl From<CompressionAlgo> for HeaderValue {
-//     #[inline]
-//     fn from(algo: CompressionAlgo) -> Self {
-//         HeaderValue::from_static(match algo {
-//             #[cfg(feature = "compression-brotli")]
-//             CompressionAlgo::BR => "br",
-//             #[cfg(feature = "compression-gzip")]
-//             CompressionAlgo::DEFLATE => "deflate",
-//             #[cfg(feature = "compression-gzip")]
-//             CompressionAlgo::GZIP => "gzip",
-//         })
-//     }
-// }
+impl From<CompressionAlgo> for HeaderValue {
+    #[inline]
+    fn from(algo: CompressionAlgo) -> Self {
+        HeaderValue::from_static(match algo {
+            CompressionAlgo::BR => "br",
+            CompressionAlgo::DEFLATE => "deflate",
+            CompressionAlgo::GZIP => "gzip",
+        })
+    }
+}
 
 #[pin_project]
 #[derive(Debug)]
@@ -122,7 +119,8 @@ impl From<hyper::Body> for CompressableBody<hyper::Body, hyper::Error> {
 #[allow(missing_debug_implementations)]
 #[pin_project]
 pub struct WithCompressionFuture<FN, F> {
-    compress: Compression<FN>,
+    // compress: Compression<FN>,
+    compress: FN,
     #[pin]
     future: F,
 }
@@ -141,7 +139,7 @@ where
         let result = ready!(pin.future.try_poll(cx));
         match result {
             Ok(reply) => {
-                let resp = (self.compress.func)(reply.into_response().into());
+                let resp = (self.compress)(reply.into_response().into());
                 Poll::Ready(Ok((Compressed(resp),)))
             }
             Err(reject) => Poll::Ready(Err(reject)),
@@ -171,8 +169,18 @@ where
 //     }
 // }
 
+#[allow(missing_debug_implementations)]
+pub struct Compressed(pub(super) Response);
+
+impl Reply for Compressed {
+    #[inline]
+    fn into_response(self) -> Response {
+        self.0
+    }
+}
+
 #[derive(Debug)]
-struct CompressionProps {
+pub struct CompressionProps {
     pub body: CompressableBody<hyper::Body, hyper::Error>,
     pub head: http::response::Parts,
 }
@@ -255,32 +263,147 @@ impl From<http::Response<hyper::Body>> for CompressionProps {
 //     // serve_file(path, conditionals).await
 // }
 
-pub fn compress<F, T>(
-    filter: F,
-) -> impl Filter<Extract = impl Reply, Error = Rejection> + Clone + Send + Sync + 'static
+// pub fn compress() -> impl crate::FilterClone<Extract = impl Reply, Error = Rejection> + Clone + Send + Sync + 'static
+// // where
+//     // F: Filter<Extract = (T,), Error = Rejection> + Clone + Send + Sync + 'static,
+//     // F::Extract: warp::Reply,
+//     // T: warp::Reply + 'static,
+// {
+//     warp::any().and_then(|reply: &dyn Reply| { reply })
+//     // |reply| async move {
+//     //     reply
+//     // }
+//     // warp::any().and(filter)
+//     // let func = move |mut props: CompressionProps| {
+//     //     let body = hyper::Body::wrap_stream(ReaderStream::new(DeflateEncoder::new(
+//     //         StreamReader::new(props.body),
+//     //     )));
+//     //     // props.head.headers.append(
+//     //     //     http::header::CONTENT_ENCODING,
+//     //     //     CompressionAlgo::DEFLATE.into(),
+//     //     // );
+//     //     // props.head.headers.remove(http::header::CONTENT_LENGTH);
+//     //     Response::from_parts(props.head, body)
+//     // };
+//     // let compressor = Compression { func };
+
+//     // WithCompressionFuture {
+//     //     future: filter,
+//     //     compress: func, // compressor.clone(),
+//     // }
+//     // .map(pls)
+//     // .map(|r| disable_cache(r))
+// }
+
+pub fn compress_wrap<F, T>(
+    quality: async_compression::Level,
+    // ) -> impl Fn(F) -> warp::filters::BoxedFilter<(Box<dyn warp::Reply>,)>
+) -> impl Fn(F) -> warp::filters::BoxedFilter<(Compressed,)>
+// Box<dyn Filter<Extract = dyn Reply, Error = Rejection> + Clone + Send + Sync + 'static>
 where
+    // W: dyn (Fn(F) -> dyn crate::FilterClone<Extract = dyn Reply, Error = Rejection, Future = dyn Reply> + Send + Sync + 'static),
+    // W: ,
+    // W: warp::Reply,
+    // F: Filter<Extract = (T,), Error = Rejection> + Clone + Send + Sync + 'static,
+    // W: Filter<Extract = (dyn warp::Reply,), Error = Rejection> + Clone + Send + Sync + 'static,
+    // W::Extract: warp::Reply,
     F: Filter<Extract = (T,), Error = Rejection> + Clone + Send + Sync + 'static,
     F::Extract: warp::Reply,
     T: warp::Reply + 'static,
 {
-    // warp::any().and(filter)
-    let func = move |mut props: CompressionProps| {
-        let body = hyper::Body::wrap_stream(ReaderStream::new(DeflateEncoder::new(
-            StreamReader::new(props.body),
-        )));
-        // props.head.headers.append(
+    move |filter: F| compress::<F, T>(quality, filter).boxed()
+    // as warp::filters::BoxedFilter<(Box<dyn warp::Reply>,)>
+}
+
+// pub struct MyTest {}
+
+// impl MyTest {
+//     type Output =
+//         impl Filter<Extract = impl Reply, Error = Rejection> + Clone + Send + Sync + 'static;
+
+//     fn compress(self, filter: ) -> Output
+//     where
+//         F: Filter<Extract = (T,), Error = Rejection> + Clone + Send + Sync + 'static,
+//         F::Extract: warp::Reply,
+//         T: warp::Reply,
+//     {
+//         warp::any().and(filter).map(|reply: T| {
+//             let (mut head, body) = reply.into_response().into_parts();
+//             let body: CompressableBody<hyper::Body, hyper::Error> = body.into();
+//             // let compressed = hyper::Body::wrap_stream(ReaderStream::new(DeflateEncoder::new(
+//             //     StreamReader::new(body),
+//             // )));
+//             // head.headers.append(
+//             //     http::header::CONTENT_ENCODING,
+//             //     CompressionAlgo::DEFLATE.into(),
+//             // );
+//             let compressed = hyper::Body::wrap_stream(ReaderStream::new(BrotliEncoder::new(
+//                 StreamReader::new(body),
+//             )));
+//             head.headers
+//                 .append(http::header::CONTENT_ENCODING, CompressionAlgo::BR.into());
+
+//             head.headers.remove(http::header::CONTENT_LENGTH);
+//             Response::from_parts(head, compressed)
+//             // reply
+//         })
+//         // .boxed()
+//     }
+// }
+
+pub fn compress<F, T>(
+    quality: async_compression::Level,
+    filter: F,
+    // ) -> impl Filter<Extract = impl Reply, Error = Rejection> + Clone + Send + Sync + 'static
+) -> impl Filter<Extract = (Compressed,), Error = Rejection> + Clone + Send + Sync + 'static
+// ) -> warp::filters::BoxedFilter<(impl Reply,)>
+where
+    F: Filter<Extract = (T,), Error = Rejection> + Clone + Send + Sync + 'static,
+    F::Extract: warp::Reply,
+    T: warp::Reply,
+{
+    warp::any().and(filter).map(move |reply: T| {
+        let (mut head, body) = reply.into_response().into_parts();
+        let body: CompressableBody<hyper::Body, hyper::Error> = body.into();
+        // let compressed = hyper::Body::wrap_stream(ReaderStream::new(DeflateEncoder::new(
+        //     StreamReader::new(body),
+        // )));
+        // head.headers.append(
         //     http::header::CONTENT_ENCODING,
         //     CompressionAlgo::DEFLATE.into(),
         // );
-        // props.head.headers.remove(http::header::CONTENT_LENGTH);
-        Response::from_parts(props.head, body)
-    };
-    let compressor = Compression { func };
+        let compressed = hyper::Body::wrap_stream(ReaderStream::new(BrotliEncoder::with_quality(
+            StreamReader::new(body),
+            quality,
+        )));
+        head.headers
+            .append(http::header::CONTENT_ENCODING, CompressionAlgo::BR.into());
 
-    WithCompressionFuture {
-        filter,
-        compress: compressor.clone(),
-    }
+        head.headers.remove(http::header::CONTENT_LENGTH);
+        // Box::<dyn Reply>::new(Response::from_parts(head, compressed))
+        // Box::<dyn Reply>::new(Compressed(Response::from_parts(head, compressed)))
+        // Box::new(Compressed(Response::from_parts(head, compressed)))
+        Compressed(Response::from_parts(head, compressed))
+        // reply
+    })
+    // .boxed()
+    // let func = move |mut props: CompressionProps| {
+    //     let body = hyper::Body::wrap_stream(ReaderStream::new(DeflateEncoder::new(
+    //         StreamReader::new(props.body),
+    //     )));
+    //     // props.head.headers.append(
+    //     //     http::header::CONTENT_ENCODING,
+    //     //     CompressionAlgo::DEFLATE.into(),
+    //     // );
+    //     // props.head.headers.remove(http::header::CONTENT_LENGTH);
+    //     Response::from_parts(props.head, body)
+    // };
+    // // let compressor = Compression { func };
+
+    // WithCompressionFuture {
+    //     future: filter,
+    //     compress: func, // compressor.clone(),
+    // }
     // .map(pls)
     // .map(|r| disable_cache(r))
 }

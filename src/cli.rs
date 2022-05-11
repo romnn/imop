@@ -41,6 +41,10 @@ use warp::Future;
 use warp::Rejection;
 use warp::{Filter, Reply};
 
+fn print_type_of<T>(_: &T) {
+    println!("{}", std::any::type_name::<T>())
+}
+
 pub trait FilterClone: Filter + Clone {}
 // type One<T> = (T,);
 
@@ -437,29 +441,39 @@ async fn main() {
     let health = warp::path!("healthz").and(warp::get()).map(|| "healthy");
 
     let base = Arc::new(options.image_path);
+    // let clo = |filter| compression::compress(12, filter);
+    // print_type_of(&clo);
     let images = warp::path("images")
         .or(warp::head())
         .unify()
         .and(path_from_tail(base))
         .and(conditionals())
         .and(warp::query::<Optimizations>())
-        .and_then(file_reply);
-    #[cfg(feature = "compression")]
-    let images = {
-        // let algo = compression::CompressionAlgo::BR;
-        // let compressor = compression::auto();
-        // let compressor: warp::compression::Compression<Box<dyn Fn(_) -> Response + Copy>> =
-        //     Box::new(match algo {
-        //         CompressionAlgo::BR => warp::compression::brotli(),
-        //         CompressionAlgo::DEFLATE => warp::compression::deflate(),
-        //         CompressionAlgo::GZIP => warp::compression::gzip(),
-        //     });
-        // images.with(compressor)
-        // images.and_then(compression::compress())
-        images.with(warp::wrap_fn(|filter| {
-            compression::compress(filter)
-        }))
-    };
+        .and_then(file_reply)
+        // .with(warp::compression::brotli());
+        // .with(warp::compression::gzip());
+        .with(warp::wrap_fn(compression::compress_wrap(
+            async_compression::Level::Best,
+        )));
+    // .with(warp::wrap_fn(|filter| compression::compress(12, filter)));
+    // .with(warp::wrap_fn(clo));
+    // .with(warp::wrap_fn(compression::compress_wrap(12)));
+    // #[cfg(feature = "compression")]
+    // let images = {
+    //     // let algo = compression::CompressionAlgo::BR;
+    //     // let compressor = compression::auto();
+    //     // let compressor: warp::compression::Compression<Box<dyn Fn(_) -> Response + Copy>> =
+    //     //     Box::new(match algo {
+    //     //         CompressionAlgo::BR => warp::compression::brotli(),
+    //     //         CompressionAlgo::DEFLATE => warp::compression::deflate(),
+    //     //         CompressionAlgo::GZIP => warp::compression::gzip(),
+    //     //     });
+    //     images.with(compression::compress)
+    //     // images.and_then(compression::compress())
+    //     // images.with(warp::wrap_fn(|filter| {
+    //     //     compression::compress(filter)
+    //     // }))
+    // };
     // #[cfg(not(feature = "compression"))]
     // let images = images.and_then(file_reply);
 
