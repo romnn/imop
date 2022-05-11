@@ -1,27 +1,21 @@
+#![allow(warnings)]
+
 #[macro_use]
 extern crate lazy_static;
 
-// use crate::util::ScalarDuration;
 use anyhow::Result;
+use bytes::{Bytes, BytesMut};
+use clap::Parser;
+#[cfg(feature = "compression")]
+mod compression;
 use futures_util::future::Either;
 use futures_util::TryFuture;
 use futures_util::{future, ready, stream, FutureExt, Stream, StreamExt, TryFutureExt};
-use std::pin::Pin;
-// use tokio::fs::File;
-use tokio::io::AsyncSeekExt;
-use warp::hyper::Body;
-use warp::reply::Response;
-use warp::Future;
-// use futures::{future, stream, Future, Stream};
-use warp::Rejection;
-// use tokio::fs::File as TkFile;
-// use chrono::{Duration, Local, NaiveDate};
-use bytes::{Bytes, BytesMut};
-use clap::Parser;
 use headers::{
-    AcceptRanges, ContentLength, ContentRange, ContentType, Header, HeaderMapExt, IfModifiedSince,
-    IfRange, IfUnmodifiedSince, LastModified, Range,
+    AcceptRanges, ContentEncoding, ContentLength, ContentRange, ContentType, Header, HeaderMapExt,
+    HeaderValue, IfModifiedSince, IfRange, IfUnmodifiedSince, LastModified, Range,
 };
+use pin_project::pin_project;
 use serde::{Deserialize, Serialize};
 use std::cmp;
 use std::collections::HashMap;
@@ -30,18 +24,25 @@ use std::fmt;
 use std::io;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::Arc;
-use std::task::Poll;
+use std::task::{Context, Poll};
+use tokio::io::AsyncSeekExt;
 use tokio::io::AsyncWriteExt;
 use tokio::signal;
 use tokio::sync::{broadcast, Mutex, RwLock};
 use tokio_util::io::poll_read_buf;
+use tokio_util::io::{ReaderStream, StreamReader};
 use urlencoding::decode;
 use warp::http::{StatusCode, Uri};
+use warp::hyper;
+use warp::reply::Response;
+use warp::Future;
+use warp::Rejection;
 use warp::{Filter, Reply};
 
-trait FilterClone: Filter + Clone {}
-type One<T> = (T,);
+pub trait FilterClone: Filter + Clone {}
+// type One<T> = (T,);
 
 impl<T: Filter + Clone> FilterClone for T {}
 
@@ -53,29 +54,6 @@ impl AsRef<Path> for ArcPath {
         (*self.0).as_ref()
     }
 }
-
-// #[derive(Copy, Clone)]
-// struct FilterFn<F> {
-//     func: F,
-// }
-
-// impl<F, U> FilterBase for FilterFn<F>
-// where
-//     F: Fn(&mut warp::route::Route) -> U,
-//     U: TryFuture + Send + 'static,
-//     U::Ok: Tuple + Send,
-//     U::Error: warp::reject::IsReject,
-// {
-//     type Extract = U::Ok;
-//     type Error = U::Error;
-//     type Future =
-//         Pin<Box<dyn Future<Output = Result<Self::Extract, Self::Error>> + Send + 'static>>;
-
-//     #[inline]
-//     fn filter(&self, _: Internal) -> Self::Future {
-//         Box::pin(warp::route::with(|route| (self.func)(route)).into_future())
-//     }
-// }
 
 fn reserve_at_least(buf: &mut BytesMut, cap: usize) {
     if buf.capacity() - buf.len() < cap {
@@ -115,13 +93,11 @@ fn file_stream(
                 let n = match ready!(poll_read_buf(Pin::new(&mut f), cx, &mut buf)) {
                     Ok(n) => n as u64,
                     Err(err) => {
-                        // tracing::debug!("file read error: {}", err);
                         return Poll::Ready(Some(Err(err)));
                     }
                 };
 
                 if n == 0 {
-                    // tracing::debug!("file read found EOF before expected length");
                     return Poll::Ready(None);
                 }
 
@@ -200,7 +176,6 @@ fn bytes_range(range: Option<Range>, max_len: u64) -> Result<(u64, u64), BadRang
             if start < end && end <= max_len {
                 Ok((start, end))
             } else {
-                // tracing::trace!("unsatisfiable byte range: {}-{}/{}", start, end, max_len);
                 Err(BadRange)
             }
         })
@@ -209,50 +184,19 @@ fn bytes_range(range: Option<Range>, max_len: u64) -> Result<(u64, u64), BadRang
     ret
 }
 
-// fn filter_fn<F, U>(func: F) -> FilterFn<F>
-// where
-//     F: Fn(&mut warp::route::Route) -> U,
-//     U: TryFuture,
-//     U::Ok: Tuple,
-//     U::Error: warp::reject::IsReject,
-// {
-//     FilterFn { func }
-// }
-
-// fn filter_fn_one<F, U>(func: F) -> impl Filter<Extract = (U::Ok,), Error = U::Error> + Copy
-// where
-//     F: Fn(&mut warp::route::Route) -> U + Copy,
-//     U: TryFuture + Send + 'static,
-//     U::Ok: Send,
-//     U::Error: warp::reject::IsReject,
-// {
-//     filter_fn(move |route| func(route).map_ok(|item| (item,)))
-// }
-
-// fn optional2<T>() -> impl Filter<Extract = One<Option<T>>, Error = Infallible> + Copy
-// where
-//     T: Header + Send + 'static,
-// {
-//     // filter_fn_one(move |route| future::ready(Ok(route.headers().typed_get())))
-// }
-
 fn sanitize_path(base: impl AsRef<Path>, tail: &str) -> Result<PathBuf, Rejection> {
     let mut buf = PathBuf::from(base.as_ref());
     let p = match decode(tail) {
         Ok(p) => p,
         Err(err) => {
-            // tracing::debug!("dir: failed to decode route={:?}: {:?}", tail, err);
             // FromUrlEncodingError doesn't implement StdError
             return Err(warp::reject::not_found());
         }
     };
-    // tracing::trace!("dir? base={:?}, route={:?}", base.as_ref(), p);
     for seg in p.split('/') {
         if seg.starts_with("..") {
-            // tracing::warn!("dir: rejecting segment starting with '..'");
             return Err(warp::reject::not_found());
         } else if seg.contains('\\') {
-            // tracing::warn!("dir: rejecting segment containing with backslash (\\)");
             return Err(warp::reject::not_found());
         } else {
             buf.push(seg);
@@ -282,31 +226,25 @@ impl Conditionals {
                 .unwrap_or(false);
 
             if !precondition {
-                let mut res = Response::new(Body::empty());
+                let mut res = Response::new(hyper::Body::empty());
                 *res.status_mut() = StatusCode::PRECONDITION_FAILED;
                 return Cond::NoBody(res);
             }
         }
 
         if let Some(since) = self.if_modified_since {
-            // tracing::trace!(
-            //     "if-modified-since? header = {:?}, file = {:?}",
-            //     since,
-            //     last_modified
-            // );
             let unmodified = last_modified
                 .map(|time| !since.is_modified(time.into()))
                 // no last_modified means its always modified
                 .unwrap_or(false);
             if unmodified {
-                let mut res = Response::new(Body::empty());
+                let mut res = Response::new(hyper::Body::empty());
                 *res.status_mut() = StatusCode::NOT_MODIFIED;
                 return Cond::NoBody(res);
             }
         }
 
         if let Some(if_range) = self.if_range {
-            // tracing::trace!("if-range? {:?} vs {:?}", if_range, last_modified);
             let can_range = !if_range.is_modified(None, last_modified.as_ref());
 
             if !can_range {
@@ -318,9 +256,7 @@ impl Conditionals {
     }
 }
 
-fn path_from_tail(
-    base: Arc<PathBuf>,
-) -> impl FilterClone<Extract = One<ArcPath>, Error = Rejection> {
+fn path_from_tail(base: Arc<PathBuf>) -> impl FilterClone<Extract = (ArcPath,), Error = Rejection> {
     warp::path::tail().and_then(move |tail: warp::path::Tail| {
         future::ready(sanitize_path(base.as_ref(), tail.as_str())).and_then(|mut buf| async {
             let is_dir = tokio::fs::metadata(buf.clone())
@@ -329,10 +265,8 @@ fn path_from_tail(
                 .unwrap_or(false);
 
             if is_dir {
-                // tracing::debug!("dir: appending index.html to directory path");
                 buf.push("index.html");
             }
-            // tracing::trace!("dir: {:?}", buf);
             Ok(ArcPath(Arc::new(buf)))
         })
     })
@@ -345,35 +279,6 @@ fn conditionals() -> impl Filter<Extract = (Conditionals,), Error = Infallible> 
         if_range: headers.typed_get(),
         range: headers.typed_get(),
     })
-    // |route: &mut warp::route::Route| async {
-    //     (Conditionals {
-    //         if_modified_since: None,
-    //         if_unmodified_since: None,
-    //         if_range: None,
-    //         range: None,
-    //     },)
-    // }
-    // warp::any().map(|| {
-    //     (Conditionals {
-    //         if_modified_since: None,
-    //         if_unmodified_since: None,
-    //         if_range: None,
-    //         range: None,
-    //     },)
-    // })
-
-    // optional2()
-    //     .and(optional2())
-    //     .and(optional2())
-    //     .and(optional2())
-    //     .map(
-    //         |if_modified_since, if_unmodified_since, if_range, range| Conditionals {
-    //             if_modified_since,
-    //             if_unmodified_since,
-    //             if_range,
-    //             range,
-    //         },
-    //     )
 }
 
 async fn file_metadata(
@@ -381,10 +286,7 @@ async fn file_metadata(
 ) -> Result<(tokio::fs::File, std::fs::Metadata), Rejection> {
     match f.metadata().await {
         Ok(meta) => Ok((f, meta)),
-        Err(err) => {
-            // tracing::debug!("file metadata error: {}", err);
-            Err(warp::reject::not_found())
-        }
+        Err(err) => Err(warp::reject::not_found()),
     }
 }
 
@@ -423,7 +325,7 @@ fn file_conditional(
                         let sub_len = end - start;
                         let buf_size = optimal_buf_size(&meta);
                         let stream = file_stream(file, buf_size, (start, end));
-                        let body = Body::wrap_stream(stream);
+                        let body = hyper::Body::wrap_stream(stream);
 
                         let mut resp = Response::new(body);
 
@@ -450,7 +352,7 @@ fn file_conditional(
                     })
                     .unwrap_or_else(|BadRange| {
                         // bad byte range
-                        let mut resp = Response::new(Body::empty());
+                        let mut resp = Response::new(hyper::Body::empty());
                         *resp.status_mut() = StatusCode::RANGE_NOT_SATISFIABLE;
                         resp.headers_mut()
                             .typed_insert(ContentRange::unsatisfied_bytes(len));
@@ -473,9 +375,8 @@ struct FileOpenError;
 // impl std::error::Error for FileOpenError {}
 impl warp::reject::Reject for FileOpenError {}
 
-async fn test(path: ArcPath, conditionals: Conditionals) -> Result<File, Rejection> {
+async fn serve_file(path: ArcPath, conditionals: Conditionals) -> Result<File, Rejection> {
     match tokio::fs::File::open(&path).await {
-        // Ok(f) => Either::Left(file_conditional(f, path, conditionals)),
         Ok(f) => file_conditional(f, path, conditionals).await,
         Err(err) => {
             let rej = match err.kind() {
@@ -483,32 +384,22 @@ async fn test(path: ArcPath, conditionals: Conditionals) -> Result<File, Rejecti
                 io::ErrorKind::PermissionDenied => warp::reject::custom(FilePermissionError {}),
                 _ => warp::reject::custom(FileOpenError {}),
             };
-            // Either::Right(future::err(rej))
-            // Either::Right(rej)
             Err(rej)
         }
     }
-    // tokio::fs::File::open(path.clone()).then(move |res| match res {
-    //     Ok(f) => Either::Left(file_conditional(f, path, conditionals)),
-    //     Err(err) => {
-    //         let rej = match err.kind() {
-    //             io::ErrorKind::NotFound => warp::reject::not_found(),
-    //             io::ErrorKind::PermissionDenied => warp::reject::custom(FilePermissionError {}),
-    //             _ => warp::reject::custom(FileOpenError {}),
-    //         };
-    //         Either::Right(future::err(rej))
-    //     }
-    // })
 }
 
-// fn file_reply(
-//     path: ArcPath,
-//     conditionals: Conditionals,
-// ) -> impl Future<Output = Result<File, Rejection>> + Send {
-
-async fn file_reply(path: ArcPath, conditionals: Conditionals) -> Result<File, Rejection> {
+async fn file_reply(
+    path: ArcPath,
+    conditionals: Conditionals,
+    options: Optimizations,
+) -> Result<File, Rejection> {
     println!("{:?}", path);
-    test(path, conditionals).await
+    // todo: parse the compression options
+    // todo: look up if the file was already compressed, if so, get it from the disk cache
+    // todo: if not, compress and save to cache
+    // todo: serve the correct file
+    serve_file(path, conditionals).await
 }
 
 #[derive(Parser, Serialize, Deserialize, Debug, Clone)]
@@ -527,17 +418,10 @@ pub struct ImopOptions {
     retain_days: Option<u64>,
 }
 
-// pub async fn serve_optimized(
-// pub async fn serve_optimized(
-//     file: warp::filters::fs::File,
-//     // ) -> Result<impl warp::Reply, warp::Rejection> {
-//     // ) -> impl Filter<Extract = (warp::filters::fs::File,), Error = Rejection> {
-//     // ) -> impl Future<Item = warp::filters::fs::File, Error = Rejection> + Send {
-// ) -> impl Future<Output = Result<warp::filters::fs::File, Rejection>> + Send {
-//     file
-//     // warp::fs::file("./Cargo.toml") // .into_response()
-//     // Ok("Hello world !")
-// }
+#[derive(Deserialize)]
+pub struct Optimizations {
+    quality: Option<u32>,
+}
 
 #[tokio::main]
 async fn main() {
@@ -554,54 +438,30 @@ async fn main() {
 
     let base = Arc::new(options.image_path);
     let images = warp::path("images")
-        // .and(warp::fs::dir(options.image_path))
-        // .and(warp::fs::dir(options.image_path))
-        // .map(|reply: warp::filters::fs::File| Ok(reply))
-        // .map(|reply: Result<warp::filters::fs::File>| reply.unwrap())
-        // .map(serve_optimized)
-        // .and_then(|reply: warp::filters::fs::File| {
-        //     // todo: parse the compression options
-        //     // todo: look up if the file was already compressed, if so, get it from the disk cache
-        //     // todo: if not, compress and save to cache
-        //     // todo: serve the correct file
-        //     println!("{}", reply.path().display());
-        //     warp::fs::file("./Cargo.toml") // .into_response()
-        //     // if reply.path().ends_with("video.mp4") {
-        //     //     warp::reply::with_header(reply, "Content-Type", "video/mp4").into_response()
-        //     // } else {
-        //     //     reply.into_response()
-        //     // }
-        // })
-        // .with(warp::compression::deflate());
-        // crate::get()
-        // .or(warp::head())
-        // .unify()
+        .or(warp::head())
+        .unify()
         .and(path_from_tail(base))
         .and(conditionals())
+        .and(warp::query::<Optimizations>())
         .and_then(file_reply);
-    // .with(warp::compression::deflate());
-
-    // let tracker_clone = tracker.clone();
-    // let options_clone = options.clone();
-    // let current = warp::path!("likes" / "current")
-    //     .and(warp::get())
-    //     .and(warp::query::<RenderOptions>())
-    //     .and(warp::any().map(move || tmpl_clone.clone()))
-    //     .and(warp::any().map(move || tracker_clone.clone()))
-    //     .and(warp::any().map(move || options_clone.clone()))
-    //     .and_then(current_handler);
-
-    // let tmpl_clone = tmpl.clone();
-    // let tracker_clone = tracker.clone();
-    // let likes = warp::path!(u16 / u16 / "likes")
-    //     .and(warp::get())
-    //     .and(warp::any().map(move || tmpl_clone.clone()))
-    //     .and(warp::any().map(move || tracker_clone.clone()))
-    //     .and_then(like_handler);
-
-    // let index = warp::path::end()
-    //     .and(warp::get())
-    //     .map(|| warp::redirect(Uri::from_static("/1/0/likes")));
+    #[cfg(feature = "compression")]
+    let images = {
+        // let algo = compression::CompressionAlgo::BR;
+        // let compressor = compression::auto();
+        // let compressor: warp::compression::Compression<Box<dyn Fn(_) -> Response + Copy>> =
+        //     Box::new(match algo {
+        //         CompressionAlgo::BR => warp::compression::brotli(),
+        //         CompressionAlgo::DEFLATE => warp::compression::deflate(),
+        //         CompressionAlgo::GZIP => warp::compression::gzip(),
+        //     });
+        // images.with(compressor)
+        // images.and_then(compression::compress())
+        images.with(warp::wrap_fn(|filter| {
+            compression::compress(filter)
+        }))
+    };
+    // #[cfg(not(feature = "compression"))]
+    // let images = images.and_then(file_reply);
 
     let routes = images.or(health);
     let (_addr, server) =
@@ -612,15 +472,6 @@ async fn main() {
 
     let tserver = tokio::task::spawn(server);
 
-    // let tracker_clone = tracker.clone();
-    // let periodic = tokio::task::spawn(async move {
-    //     tracker_clone.run().await.expect("start periodic");
-    // });
-
-    // let tracker_clone = tracker.clone();
-    // let mut shutdown_rx = shutdown_tx.subscribe();
-    // tokio::task::spawn(async move { tracker_clone.periodic(&mut shutdown_rx).await });
-
     if (signal::ctrl_c().await).is_ok() {
         println!("received shutdown");
         println!("waiting for pending tasks to complete...");
@@ -628,6 +479,5 @@ async fn main() {
     };
 
     tserver.await.expect("server terminated");
-    // periodic.await.expect("periodic terminated");
     println!("exiting");
 }

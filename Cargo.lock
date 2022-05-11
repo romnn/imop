@@ -633,6 +633,7 @@ name = "imop"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-compression",
  "bytes",
  "clap",
  "futures-util",
@@ -641,6 +642,7 @@ dependencies = [
  "image",
  "lazy_static",
  "mime_guess",
+ "pin-project",
  "serde",
  "serde_json",
  "tokio",
@@ -1567,7 +1569,6 @@ version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3cef4e1e9114a4b7f1ac799f16ce71c14de5778500c5450ec6b7b920c55b587e"
 dependencies = [
- "async-compression",
  "bytes",
  "futures-channel",
  "futures-util",
