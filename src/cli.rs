@@ -1,19 +1,17 @@
 #![allow(warnings)]
 
-#[macro_use]
-extern crate lazy_static;
-
 use anyhow::Result;
 use bytes::{Bytes, BytesMut};
 use clap::Parser;
 #[cfg(feature = "compression")]
 mod compression;
+mod headers;
 use futures_util::future::Either;
 use futures_util::TryFuture;
 use futures_util::{future, ready, stream, FutureExt, Stream, StreamExt, TryFutureExt};
-use headers::{
-    AcceptRanges, ContentEncoding, ContentLength, ContentRange, ContentType, Header, HeaderMapExt,
-    HeaderValue, IfModifiedSince, IfRange, IfUnmodifiedSince, LastModified, Range,
+use http_headers::{
+    AcceptRanges, ContentEncoding, ContentLength, ContentRange, ContentType, Header, HeaderMap,
+    HeaderMapExt, HeaderValue, IfModifiedSince, IfRange, IfUnmodifiedSince, LastModified, Range,
 };
 use pin_project::pin_project;
 use serde::{Deserialize, Serialize};
@@ -277,7 +275,7 @@ fn path_from_tail(base: Arc<PathBuf>) -> impl FilterClone<Extract = (ArcPath,), 
 }
 
 fn conditionals() -> impl Filter<Extract = (Conditionals,), Error = Infallible> + Copy {
-    warp::header::headers_cloned().map(|headers: headers::HeaderMap| Conditionals {
+    warp::header::headers_cloned().map(|headers: HeaderMap| Conditionals {
         if_modified_since: headers.typed_get(),
         if_unmodified_since: headers.typed_get(),
         if_range: headers.typed_get(),
@@ -452,9 +450,13 @@ async fn main() {
         .and_then(file_reply)
         // .with(warp::compression::brotli());
         // .with(warp::compression::gzip());
-        .with(warp::wrap_fn(compression::compress_wrap(
-            async_compression::Level::Best,
-        )));
+        // .with(warp::compression::gzip());
+        // .with(warp::wrap_fn(compression::compress(
+        //     compression::CompressionAlgo::BR,
+        //     compression::Level::Best,
+        // )));
+        // .with(warp::wrap_fn(compression::brotli(compression::Level::Best)));
+        .with(warp::wrap_fn(compression::auto(compression::Level::Best)));
     // .with(warp::wrap_fn(|filter| compression::compress(12, filter)));
     // .with(warp::wrap_fn(clo));
     // .with(warp::wrap_fn(compression::compress_wrap(12)));
