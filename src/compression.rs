@@ -340,13 +340,18 @@ impl Into<http::Response<hyper::Body>> for Compressable {
 //     // .map(|r| disable_cache(r))
 // }
 
-pub fn auto<F, T>(quality: Level) -> impl Fn(F) -> warp::filters::BoxedFilter<(Compressed,)>
+pub fn auto<F, T>(
+    quality: Level,
+    // content_type_filter: Option<ContentTypeFilter>,
+) -> impl Fn(F) -> warp::filters::BoxedFilter<(Compressed,)>
 where
     F: Filter<Extract = (T,), Error = Rejection> + Clone + Send + Sync + 'static,
     F::Extract: warp::Reply,
     T: warp::Reply + 'static,
+    // CT: Fn(Option<ContentType>) -> bool + Clone + Send + Sync + 'static,
 {
-    move |filter: F| compress::<F, T>(None, quality, filter).boxed()
+    // content_type_filter.clone(),
+    move |filter: F| compress::<F, T>(None, quality, None, filter).boxed()
 }
 
 // pub fn algo<F, T>(
@@ -362,14 +367,29 @@ where
 //     move |filter: F| compress::<F, T>(algo, quality, filter).boxed()
 // }
 
-pub fn brotli<F, T>(quality: Level) -> impl Fn(F) -> warp::filters::BoxedFilter<(Compressed,)>
+// pub fn brotli<'a, F, T, CT>(
+pub fn brotli<F, T>(
+    quality: Level,
+    // content_type_filter: &'a Option<ContentTypeFilter<CT>>,
+    // content_type_filter: Option<ContentTypeFilter>,
+) -> impl Fn(F) -> warp::filters::BoxedFilter<(Compressed,)>
 where
     F: Filter<Extract = (T,), Error = Rejection> + Clone + Send + Sync + 'static,
     F::Extract: warp::Reply,
     T: warp::Reply + 'static,
+    // CT: Fn(Option<ContentType>) -> bool + Clone + Send + Sync + 'static,
     // T: warp::Reply + Into<Compressable> + 'static,
 {
-    move |filter: F| compress::<F, T>(Some(CompressionAlgo::BR), quality, filter).boxed()
+    move |filter: F| {
+        compress::<F, T>(
+            Some(CompressionAlgo::BR),
+            quality,
+            None,
+            // content_type_filter.clone(),
+            filter,
+        )
+        .boxed()
+    }
 }
 
 // pub struct MyTest {}
@@ -408,9 +428,29 @@ where
 //     }
 // }
 
+// trait NewTrait: Fn<(Option<ContentType>,)> + Clone {}
+
+// #[derive(Clone, Copy)]
+// enum ContentTypeFilter<CT: Clone> {
+// #[derive(Clone, Copy)]
+// trait CopyableFn: Fn(Option<&ContentType>) -> bool + Clone + Sized {}
+
+#[derive(Clone)]
+enum ContentTypeFilter {
+    // Custom(impl Fn() -> bool),
+    // Custom(() -> bool),
+    // Custom(Box<dyn NewTrait -> bool + Send + Sync + 'static>),
+    // Custom(Box<dyn Fn(Option<&ContentType>) -> bool + Clone + Send + Sync + 'static>),
+    // Custom(Box<dyn CopyableFn + Send + Sync + 'static>),
+    Custom(Arc<Box<dyn Fn(Option<&ContentType>) -> bool + Send + Sync + 'static>>),
+    // Custom(CT),
+}
+
 fn compress<F, T>(
     algo: Option<CompressionAlgo>,
     quality: Level,
+    // content_type_filter: &'a Option<ContentTypeFilter<CT>>,
+    content_type_filter: Option<ContentTypeFilter>,
     filter: F,
     // ) -> impl Filter<Extract = impl Reply, Error = Rejection> + Clone + Send + Sync + 'static
 ) -> impl Filter<Extract = (Compressed,), Error = Rejection> + Clone + Send + Sync + 'static
@@ -418,6 +458,7 @@ fn compress<F, T>(
 where
     F: Filter<Extract = (T,), Error = Rejection> + Clone + Send + Sync + 'static,
     F::Extract: warp::Reply,
+    // CT: Fn(Option<ContentType>) -> bool + Clone + Send + Sync + 'static,
     // T: warp::Reply,
     // T: Compressable: From<T>,
     T: warp::Reply + 'static,
@@ -445,8 +486,28 @@ where
                     .and_then(|header| header.prefered_encoding())
                     .map(|encoding| encoding.into());
 
+                let test = match &content_type_filter {
+                    Some(ContentTypeFilter::Custom(func)) => {
+                        (func)(compressable.head.headers.typed_get().as_ref())
+                    }
+                    None => true,
+                };
+                // let algo = if content_type_filter
+                //     // .as_ref()
+                //     .map(|filter| match filter {
+                //         ContentTypeFilter::Custom(func) => {
+                //             (func)(compressable.head.headers.typed_get())
+                //         }
+                //     })
+                //     .unwrap_or(true)
+                // {
+                //     algo.or(prefered_encoding)
+                // } else {
+                //     None
+                // };
                 let algo = algo.or(prefered_encoding);
                 println!("algo: {:?}", algo);
+                println!("headers: {:?}", compressable.head.headers);
                 let stream = StreamReader::new(compressable.body);
                 let encoded_stream: Box<dyn tokio::io::AsyncRead + Send + std::marker::Unpin> =
                     match algo {

@@ -456,7 +456,8 @@ async fn main() {
         //     compression::Level::Best,
         // )));
         // .with(warp::wrap_fn(compression::brotli(compression::Level::Best)));
-        .with(warp::wrap_fn(compression::auto(compression::Level::Best)));
+        // .with(warp::wrap_fn(compression::auto(compression::Level::Best)));
+        .with(warp::wrap_fn(compression::brotli(compression::Level::Best)));
     // .with(warp::wrap_fn(|filter| compression::compress(12, filter)));
     // .with(warp::wrap_fn(clo));
     // .with(warp::wrap_fn(compression::compress_wrap(12)));
