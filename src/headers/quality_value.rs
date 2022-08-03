@@ -35,7 +35,7 @@ impl TryFromValues for HeaderValue {
         values
             .next()
             .cloned()
-            .ok_or_else(|| http_headers::Error::invalid())
+            .ok_or_else(http_headers::Error::invalid)
     }
 }
 
@@ -80,16 +80,24 @@ mod sealed {
                                 in_quotes = false;
                             }
                             false // dont split
+                        } else if c == Sep::CHAR {
+                            true // split
                         } else {
-                            if c == Sep::CHAR {
-                                true // split
-                            } else {
-                                if c == '"' {
-                                    in_quotes = true;
-                                }
-                                false // dont split
+                            if c == '"' {
+                                in_quotes = true;
                             }
+                            false // dont split
                         }
+                        // else {
+                        //     if c == Sep::CHAR {
+                        //         true // split
+                        //     } else {
+                        //         if c == '"' {
+                        //             in_quotes = true;
+                        //         }
+                        //         false // dont split
+                        //     }
+                        // }
                     })
                     .map(|item| item.trim())
             })
@@ -148,7 +156,7 @@ mod sealed {
                 .next()
                 .cloned()
                 .map(|val| BytesMut::from(val.as_bytes()))
-                .unwrap_or_else(|| BytesMut::new());
+                .unwrap_or_else(BytesMut::new);
 
             for val in values {
                 buf.extend_from_slice(&[Sep::BYTE, b' ']);
@@ -179,7 +187,7 @@ mod sealed {
             let mut buf = values
                 .next()
                 .map(|val| BytesMut::from(val.as_bytes()))
-                .unwrap_or_else(|| BytesMut::new());
+                .unwrap_or_else(BytesMut::new);
 
             for val in values {
                 buf.extend_from_slice(&[Sep::BYTE, b' ']);
@@ -235,7 +243,7 @@ mod sealed {
     impl<'a, Delm: QualityDelimiter> TryFrom<&'a str> for QualityMeta<'a, Delm> {
         type Error = http_headers::Error;
 
-        fn try_from(val: &'a str) -> Result<Self, http_headers::Error> {
+        fn try_from(val: &'a str) -> Result<Self, Self::Error> {
             let mut parts: Vec<&str> = val.split(Delm::STR).collect();
 
             match (parts.pop(), parts.pop()) {
@@ -268,7 +276,6 @@ mod sealed {
                 .into_iter()
                 .sorted()
                 .map(|pair| pair.data)
-                .into_iter()
         }
     }
 
@@ -284,9 +291,9 @@ mod sealed {
     impl<Delm: QualityDelimiter, F: Into<f32>> TryFrom<(&str, F)> for QualityValue<Delm> {
         type Error = http_headers::Error;
 
-        fn try_from(pair: (&str, F)) -> Result<Self, http_headers::Error> {
+        fn try_from(pair: (&str, F)) -> Result<Self, Self::Error> {
             let value = HeaderValue::try_from(format!("{}{}{}", pair.0, Delm::STR, pair.1.into()))
-                .map_err(|_e| http_headers::Error::invalid())?;
+                .map_err(|_| http_headers::Error::invalid())?;
             Ok(QualityValue {
                 csv: value.into(),
                 _marker: PhantomData,
@@ -328,11 +335,11 @@ mod sealed {
 
 #[cfg(test)]
 mod tests {
+    use super::HeaderValue;
     use super::{
         sealed::{SemiLevel, SemiQ},
         QualityValue,
     };
-    use http_headers::HeaderValue;
 
     #[test]
     fn multiple_qualities() {

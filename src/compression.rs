@@ -2,45 +2,26 @@ use crate::headers::{AcceptEncoding, ContentCoding};
 use anyhow::Result;
 use async_compression::tokio::bufread::{BrotliEncoder, DeflateEncoder, GzipEncoder};
 pub use async_compression::Level;
-use bytes::{Bytes, BytesMut};
-use clap::Parser;
-use futures_util::future::Either;
-use futures_util::TryFuture;
-use futures_util::{future, ready, stream, FutureExt, Stream, StreamExt, TryFutureExt};
-use http_headers::{
-    AcceptRanges, ContentEncoding, ContentLength, ContentRange, ContentType, Header, HeaderMap,
-    HeaderMapExt, HeaderValue, IfModifiedSince, IfRange, IfUnmodifiedSince, LastModified, Range,
-};
+use bytes::Bytes;
+use futures_util::Stream;
+use http_headers::{ContentType, HeaderMap, HeaderMapExt, HeaderValue};
 use pin_project::pin_project;
-use serde::{Deserialize, Serialize};
-use std::cmp;
-use std::collections::HashMap;
 use std::convert::Infallible;
 use std::fmt;
-use std::io;
-use std::io::BufReader;
-use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
-use tokio::io::AsyncRead;
-use tokio::io::AsyncSeekExt;
-use tokio::io::AsyncWriteExt;
-use tokio::signal;
-use tokio::sync::{broadcast, Mutex, RwLock};
-use tokio_util::io::poll_read_buf;
 use tokio_util::io::{ReaderStream, StreamReader};
-use urlencoding::decode;
-use warp::http::{StatusCode, Uri};
+use warp::http::StatusCode;
 use warp::hyper;
 use warp::reply::Response;
-use warp::Future;
 use warp::Rejection;
 use warp::{Filter, Reply};
 
 pub trait IsReject: fmt::Debug + Send + Sync {
     fn status(&self) -> StatusCode;
-    fn into_response(&self) -> Response;
+    // fn into_response(&self) -> Response;
+    fn into_response(self) -> Response;
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -234,11 +215,17 @@ fn compression_options() -> impl Filter<Extract = (CompressionOptions,), Error =
     })
 }
 
-impl Into<http::Response<hyper::Body>> for Compressable {
-    fn into(self) -> http::Response<hyper::Body> {
-        Response::from_parts(self.head, self.body.body)
+impl From<Compressable> for http::Response<hyper::Body> {
+    fn from(c: Compressable) -> http::Response<hyper::Body> {
+        Response::from_parts(c.head, c.body.body)
     }
 }
+
+// impl Into<http::Response<hyper::Body>> for Compressable {
+//     fn into(self) -> http::Response<hyper::Body> {
+//         Response::from_parts(self.head, self.body.body)
+//     }
+// }
 
 // fn deflate() -> Compression<impl Fn(Compressable) -> Response + Copy> {
 //     // fn deflate() -> impl Fn(Compressable) -> Response + Copy {
@@ -442,6 +429,7 @@ enum ContentTypeFilter {
     // Custom(Box<dyn NewTrait -> bool + Send + Sync + 'static>),
     // Custom(Box<dyn Fn(Option<&ContentType>) -> bool + Clone + Send + Sync + 'static>),
     // Custom(Box<dyn CopyableFn + Send + Sync + 'static>),
+    // #[allow(dead_code)]
     Custom(Arc<Box<dyn Fn(Option<&ContentType>) -> bool + Send + Sync + 'static>>),
     // Custom(CT),
 }

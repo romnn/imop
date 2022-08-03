@@ -1,9 +1,9 @@
 use std::convert::TryFrom;
 
 use super::content_coding::ContentCoding;
-use super::quality_value::QualityValue;
-use super::quality_value::TryFromValues;
+use super::quality_value::{QualityValue, TryFromValues};
 use http_headers::{Header, HeaderName, HeaderValue};
+// use super::{ContentCoding, Error, Header, HeaderName, HeaderValue, QualityValue};
 
 /// `Accept-Encoding` header, defined in
 /// [RFC7231](https://tools.ietf.org/html/rfc7231#section-5.3.4)
@@ -62,7 +62,7 @@ impl AcceptEncoding {
     /// # Example
     ///
     /// ```
-    /// use headers::AcceptEncoding;
+    /// use imop::headers::AcceptEncoding;
     ///
     /// let pairs = vec![("gzip", 1.0), ("deflate", 0.8)];
     /// let header = AcceptEncoding::from_quality_pairs(&mut pairs.into_iter());
@@ -72,9 +72,8 @@ impl AcceptEncoding {
         I: Iterator<Item = (&'i str, f32)>,
     {
         let values: Vec<HeaderValue> = pairs
-            .map(|pair| {
-                QualityValue::try_from(pair).map(|qual: QualityValue| HeaderValue::from(qual))
-            })
+            // .map(|pair| QualityValue::try_from(pair).map(|q: QualityValue| HeaderValue::from(q)))
+            .map(|pair| <QualityValue>::try_from(pair).map(HeaderValue::from))
             .collect::<Result<Vec<HeaderValue>, http_headers::Error>>()?;
         let value = QualityValue::try_from_values(&mut values.iter())?;
         Ok(AcceptEncoding(value))
@@ -88,7 +87,7 @@ impl AcceptEncoding {
     /// # Example
     ///
     /// ```
-    /// use headers::{AcceptEncoding, ContentCoding};
+    /// use imop::headers::{AcceptEncoding, ContentCoding};
     ///
     /// let pairs = vec![("gzip", 1.0), ("deflate", 0.8)];
     /// let accept_enc = AcceptEncoding::from_quality_pairs(&mut pairs.into_iter()).unwrap();
@@ -101,7 +100,7 @@ impl AcceptEncoding {
             .iter()
             .peekable()
             .peek()
-            .map(|s| ContentCoding::from_str(*s))
+            .map(|s| ContentCoding::from_name(*s))
     }
 
     /// Returns a quality sorted iterator of the `ContentCoding`
@@ -109,7 +108,7 @@ impl AcceptEncoding {
     /// # Example
     ///
     /// ```
-    /// use headers::{AcceptEncoding, ContentCoding, HeaderValue};
+    /// use imop::headers::{AcceptEncoding, ContentCoding, HeaderValue};
     ///
     /// let val = HeaderValue::from_static("deflate, gzip;q=1.0, br;q=0.8");
     /// let accept_enc = AcceptEncoding(val.into());
@@ -121,7 +120,7 @@ impl AcceptEncoding {
     /// assert_eq!(encodings.next(), None);
     /// ```
     pub fn sorted_encodings<'a>(&'a self) -> impl Iterator<Item = ContentCoding> + 'a {
-        self.0.iter().map(|s| ContentCoding::from_str(s))
+        self.0.iter().map(ContentCoding::from_name)
     }
 
     /// Returns a quality sorted iterator of values
@@ -129,7 +128,7 @@ impl AcceptEncoding {
     /// # Example
     ///
     /// ```
-    /// use headers::{AcceptEncoding, ContentCoding, HeaderValue};
+    /// use imop::headers::{HeaderValue, AcceptEncoding, ContentCoding};
     ///
     /// let val = HeaderValue::from_static("deflate, gzip;q=1.0, br;q=0.8");
     /// let accept_enc = AcceptEncoding(val.into());
@@ -147,11 +146,8 @@ impl AcceptEncoding {
 
 #[cfg(test)]
 mod tests {
-    // use super::*;
-    // use {ContentCoding, HeaderValue};
     use super::AcceptEncoding;
-    use crate::headers::content_coding::ContentCoding;
-    use http_headers::HeaderValue;
+    use crate::headers::{ContentCoding, HeaderValue};
 
     #[test]
     fn from_static() {

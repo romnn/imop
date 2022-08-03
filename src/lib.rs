@@ -1,5 +1,14 @@
-// let output_path = self.get_output_path(output_path)?;
-//         println!("saving to {}...", output_path.display());
-//         let mut file = File::create(&output_path)?;
-//         let mut encoder = JpegEncoder::new_with_quality(&mut file, quality.unwrap_or(80));
-//         encoder.encode_image(&DynamicImage::ImageRgba8(buffer))?;
+// #![allow(warnings)]
+
+#[cfg(feature = "compression")]
+pub mod compression;
+pub mod conditionals;
+pub mod file;
+pub mod headers;
+pub mod image;
+
+use warp::Filter;
+
+pub trait FilterClone: Filter + Clone {}
+
+impl<T: Filter + Clone> FilterClone for T {}

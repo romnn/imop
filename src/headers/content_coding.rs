@@ -1,5 +1,11 @@
 use http_headers::HeaderValue;
 
+// #[derive(thiserror::Error, Debug, PartialEq)]
+// pub enum Error {
+//     #[error("invalid content coding: `{0}`")]
+//     Invalid(String),
+// }
+
 // Derives an enum to represent content codings and some helpful impls
 macro_rules! define_content_coding {
     ($($coding:ident; $str:expr,)+) => {
@@ -21,7 +27,7 @@ macro_rules! define_content_coding {
             /// # Example
             ///
             /// ```
-            /// use headers::ContentCoding;
+            /// use imop::headers::ContentCoding;
             ///
             /// let coding = ContentCoding::BROTLI;
             /// assert_eq!(coding.to_static(), "br");
@@ -42,43 +48,44 @@ macro_rules! define_content_coding {
             /// # Example
             ///
             /// ```
-            /// use headers::ContentCoding;
+            /// use imop::headers::ContentCoding;
             ///
-            /// let invalid = ContentCoding::from_str("not a valid coding");
+            /// let invalid = ContentCoding::from_name("not a valid coding");
             /// assert_eq!(invalid, ContentCoding::IDENTITY);
             ///
-            /// let valid = ContentCoding::from_str("gzip");
+            /// let valid = ContentCoding::from_name("gzip");
             /// assert_eq!(valid, ContentCoding::GZIP);
             /// ```
             #[inline]
-            pub fn from_str(s: &str) -> Self {
-                ContentCoding::try_from_str(s).unwrap_or_else(|_| ContentCoding::IDENTITY)
+            pub fn from_name(s: &str) -> Self {
+                ContentCoding::try_from_name(s).unwrap_or(ContentCoding::IDENTITY)
             }
 
             /// Given a `&str` will try to return a `ContentCoding`
             ///
-            /// Different from `ContentCoding::from_str(&str)`, if `&str` is an invalid content
+            /// Different from `ContentCoding::from_name(&str)`, if `&str` is an invalid content
             /// coding, it will return `Err(())`
             ///
             /// # Example
             ///
             /// ```
-            /// use headers::ContentCoding;
+            /// use imop::headers::ContentCoding;
             ///
-            /// let invalid = ContentCoding::try_from_str("not a valid coding");
+            /// let invalid = ContentCoding::try_from_name("not a valid coding");
             /// assert!(invalid.is_err());
             ///
-            /// let valid = ContentCoding::try_from_str("gzip");
+            /// let valid = ContentCoding::try_from_name("gzip");
             /// assert_eq!(valid.unwrap(), ContentCoding::GZIP);
             /// ```
             #[inline]
-            pub fn try_from_str(s: &str) -> Result<Self, ()> {
+            pub fn try_from_name(s: &str) -> Result<Self, http_headers::Error> {
                 match s {
                     $(
                         stringify!($coding)
                         | $str => Ok(ContentCoding::$coding),
                     )+
-                    _ => Err(())
+                    _ => Err(http_headers::Error::invalid())
+                    // _ => Err(Error::Invalid(s.to_owned()))
                 }
             }
         }
@@ -114,6 +121,7 @@ define_content_coding! {
 #[cfg(test)]
 mod tests {
     use super::ContentCoding;
+    use crate::headers::Error;
 
     #[test]
     fn to_static() {
@@ -126,18 +134,26 @@ mod tests {
     }
 
     #[test]
-    fn from_str() {
-        assert_eq!(ContentCoding::from_str("br"), ContentCoding::BROTLI);
-        assert_eq!(ContentCoding::from_str("GZIP"), ContentCoding::GZIP);
+    fn from_name() {
+        assert_eq!(ContentCoding::from_name("br"), ContentCoding::BROTLI);
+        assert_eq!(ContentCoding::from_name("GZIP"), ContentCoding::GZIP);
         assert_eq!(
-            ContentCoding::from_str("blah blah"),
+            ContentCoding::from_name("blah blah"),
             ContentCoding::IDENTITY
         );
     }
 
     #[test]
-    fn try_from_str() {
-        assert_eq!(ContentCoding::try_from_str("br"), Ok(ContentCoding::BROTLI));
-        assert_eq!(ContentCoding::try_from_str("blah blah"), Err(()));
+    fn try_from_name() {
+        assert_eq!(
+            ContentCoding::try_from_name("br").unwrap(),
+            ContentCoding::BROTLI
+        );
+        assert!(ContentCoding::try_from_name("blah blah").is_err());
+        // assert_eq!(
+        //     ContentCoding::try_from_name(&invalid),
+        //     // Err(Error::Invalid(invalid.to_owned()))
+        //     Err(http_headers::Error::invalid())
+        // );
     }
 }
