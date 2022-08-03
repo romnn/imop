@@ -20,3 +20,6 @@ You can use
 - restructure the current code in different files as a library
 - add image resizing utility function
 - add generic cache implementation (filesystem and in memory implementations)
+- add examples to find a good api
+- lint with clippy
+- add tests
