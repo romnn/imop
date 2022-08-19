@@ -29,6 +29,82 @@ pub struct Bounds {
     pub mode: Option<ScalingMode>,
 }
 
+// use serde::de::{self, Visitor};
+
+// struct ImageFormatVisitor;
+
+// impl<'de> serde::de::Visitor<'de> for ImageFormatVisitor {
+//     type Value = ImageFormat;
+
+//     fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+//         formatter.write_str("a valid image format")
+//     }
+
+//     fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+//     where
+//         E: de::Error,
+//     {
+//         Ok(ImageFormat::Jpeg)
+//     }
+// }
+
+// impl<'de> serde::Deserialize<'de> for ImageFormat {
+//     fn deserialize<D>(deserializer: D) -> Result<ImageFormat, D::Error>
+//     where
+//         D: serde::de::Deserializer<'de>,
+//     {
+//         deserializer.deserialize_string(I32Visitor)
+//     }
+// }
+
+// #[derive(Deserialize)]
+// #[serde(remote = "ImageFormat")]
+// enum ImageFormatDef {
+//     Png,
+//     Jpeg,
+//     Gif,
+//     WebP,
+//     Pnm,
+//     Tiff,
+//     Tga,
+//     Dds,
+//     Bmp,
+//     Ico,
+//     Hdr,
+//     OpenExr,
+//     Farbfeld,
+//     Avif,
+// }
+
+fn from_image_format_ext<'de, D>(deserializer: D) -> Result<Option<ImageFormat>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let s: Option<&str> = Option::deserialize(deserializer)?;
+    // let s: &str = Deserialize::deserialize(deserializer)?;
+    match s {
+        None => Ok(None),
+        Some(s) => {
+            let fmt = ImageFormat::from_extension(s)
+                .ok_or(image::error::UnsupportedError::from_format_and_kind(
+                    image::error::ImageFormatHint::Unknown,
+                    image::error::UnsupportedErrorKind::Format(
+                        image::error::ImageFormatHint::Name(s.to_string()),
+                    ),
+                ))
+                .map_err(image::error::ImageError::Unsupported)
+                .map_err(serde::de::Error::custom)?;
+            Ok(Some(fmt))
+        }
+    }
+    // match s {
+    //     "test" => Ok(Some(ImageFormat::Jpeg)),
+    //     _ => Err(D::Error::custom(),
+    // }
+    // do better hex decoding than this
+    // u64::from_str_radix(&s[2..], 16).map_err(D::Error::custom)
+}
+
 #[derive(Deserialize, Debug, Clone, Copy)]
 pub struct Optimizations {
     /// quality value for JPEG (0 to 100)
@@ -41,6 +117,10 @@ pub struct Optimizations {
     pub height: Option<u32>,
     /// mode of scaling
     pub mode: Option<ScalingMode>,
+    /// encoding format
+    #[serde(default)]
+    #[serde(deserialize_with = "from_image_format_ext")]
+    pub format: Option<ImageFormat>,
 }
 
 impl Optimizations {

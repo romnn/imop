@@ -6,6 +6,7 @@ pub mod conditionals;
 pub mod file;
 pub mod headers;
 pub mod image;
+pub mod cache;
 
 use warp::Filter;
 
