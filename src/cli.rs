@@ -98,11 +98,12 @@ async fn main() {
     // let images = images.and_then(file_reply);
 
     let routes = images.or(health);
-    let (_addr, server) =
-        warp::serve(routes).bind_with_graceful_shutdown(([0, 0, 0, 0], options.port), async move {
-            server_shutdown_rx.recv().await.expect("shutdown server");
-            println!("server shutting down");
-        });
+    let addr = ([0, 0, 0, 0], options.port);
+    let shutdown = async move {
+        server_shutdown_rx.recv().await.expect("shutdown server");
+        println!("server shutting down");
+    };
+    let (_, server) = warp::serve(routes).bind_with_graceful_shutdown(addr, shutdown);
 
     let tserver = tokio::task::spawn(server);
 

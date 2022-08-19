@@ -7,13 +7,14 @@ use anyhow::Result;
 use bytes::{Bytes, BytesMut};
 use futures_util::future::Either;
 use futures_util::{future, ready, stream, FutureExt, Stream, StreamExt, TryFutureExt};
+// use futures_util::io::AsyncSeek;
 use std::cmp;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::Poll;
-use tokio::io::AsyncSeekExt;
+use tokio::io::{AsyncRead, AsyncSeek, AsyncSeekExt};
 use tokio_util::io::poll_read_buf;
 use urlencoding::decode;
 use warp::http::StatusCode;
@@ -34,8 +35,8 @@ impl AsRef<Path> for ArcPath {
 
 #[derive(Debug)]
 pub struct File {
-    resp: Response,
-    path: ArcPath,
+    pub resp: Response,
+    pub path: ArcPath,
 }
 
 impl File {
@@ -56,18 +57,20 @@ fn reserve_at_least(buf: &mut BytesMut, cap: usize) {
     }
 }
 
-fn file_stream(
-    mut file: tokio::fs::File,
-    buf_size: usize,
+pub fn file_stream<R: AsyncRead + AsyncSeek + std::marker::Unpin + Send>(
+    mut reader: R,
     (start, end): (u64, u64),
+    buf_size: Option<usize>,
 ) -> impl Stream<Item = Result<Bytes, io::Error>> + Send {
     use std::io::SeekFrom;
 
+    let buf_size = buf_size.unwrap_or(DEFAULT_READ_BUF_SIZE);
+
     let seek = async move {
         if start != 0 {
-            file.seek(SeekFrom::Start(start)).await?;
+            reader.seek(SeekFrom::Start(start)).await?;
         }
-        Ok(file)
+        Ok(reader)
     };
 
     seek.into_stream()
@@ -76,7 +79,7 @@ fn file_stream(
             let mut len = end - start;
             let mut f = match result {
                 Ok(f) => f,
-                Err(f) => return Either::Left(stream::once(future::err(f))),
+                Err(e) => return Either::Left(stream::once(future::err(e))),
             };
 
             Either::Right(stream::poll_fn(move |cx| {
@@ -241,7 +244,7 @@ fn file_conditional(
                     .map(|(start, end)| {
                         let sub_len = end - start;
                         let buf_size = optimal_buf_size(&meta);
-                        let stream = file_stream(file, buf_size, (start, end));
+                        let stream = file_stream(file, (start, end), Some(buf_size));
                         let body = hyper::Body::wrap_stream(stream);
 
                         let mut resp = Response::new(body);
@@ -284,12 +287,10 @@ fn file_conditional(
 
 #[derive(Debug, Clone)]
 struct FilePermissionError;
-// impl std::error::Error for FilePermissionError {}
 impl warp::reject::Reject for FilePermissionError {}
 
 #[derive(Debug, Clone)]
 struct FileOpenError;
-// impl std::error::Error for FileOpenError {}
 impl warp::reject::Reject for FileOpenError {}
 
 pub async fn serve_file(path: ArcPath, conditionals: Conditionals) -> Result<File, Rejection> {

@@ -25,6 +25,7 @@ anyhow = "1"
 serde_json = "1"
 lazy_static = "1"
 futures-util = "0.3"
+futures = "0.3"
 urlencoding = "2"
 http = "0.2"
 http-headers = { version = "0.3", package = "headers" }

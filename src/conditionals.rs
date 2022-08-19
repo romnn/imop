@@ -36,7 +36,7 @@ use warp::Future;
 use warp::Rejection;
 use warp::{Filter, Reply};
 
-#[derive(Debug)]
+#[derive(Default, Debug)]
 pub struct Conditionals {
     if_modified_since: Option<IfModifiedSince>,
     if_unmodified_since: Option<IfUnmodifiedSince>,
