@@ -2,6 +2,7 @@
 
 use anyhow::Result;
 use clap::Parser;
+use http_headers::ContentType;
 use imop::compression;
 use imop::conditionals::{conditionals, Conditionals};
 use imop::file::{path_from_tail, serve_file, ArcPath, File};
@@ -74,7 +75,11 @@ async fn main() {
         // )));
         // .with(warp::wrap_fn(compression::brotli(compression::Level::Best)));
         // .with(warp::wrap_fn(compression::auto(compression::Level::Best)));
-        .with(warp::wrap_fn(compression::brotli(compression::Level::Best)));
+        .with(warp::wrap_fn(compression::brotli(
+            compression::Level::Best,
+            // compression::CompressContentType::All,
+            compression::CompressContentType::include(vec![mime_guess::mime::IMAGE_STAR]),
+        )));
     // .with(warp::wrap_fn(|filter| compression::compress(12, filter)));
     // .with(warp::wrap_fn(clo));
     // .with(warp::wrap_fn(compression::compress_wrap(12)));

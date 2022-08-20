@@ -1,12 +1,14 @@
-// #![allow(warnings)]
+#![allow(warnings)]
 
+pub mod cache;
 #[cfg(feature = "compression")]
 pub mod compression;
 pub mod conditionals;
+#[cfg(feature = "compression")]
+mod content_type_filter;
 pub mod file;
 pub mod headers;
 pub mod image;
-pub mod cache;
 
 use warp::Filter;
 

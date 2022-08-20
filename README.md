@@ -17,6 +17,15 @@ You can use
 
 #### TODO
 
+- done: can compress based on mime type and browser capabilites or specific algo, good api already
+- done: can resize images based on optimizations
+
+- make the image library generic trait as well
+- implement the cache
+- split into different examples
+- implement the cli based production server
+- do the image resize and encoding in a blocking pool
+
 - restructure the current code in different files as a library
 - add image resizing utility function
 - add generic cache implementation (filesystem and in memory implementations)

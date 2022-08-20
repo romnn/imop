@@ -3,13 +3,15 @@ use image::{
     codecs, imageops, io::Reader as ImageReader, DynamicImage, ImageEncoder, ImageOutputFormat,
     RgbaImage,
 };
+use mime_guess::mime;
 use serde::Deserialize;
+use std::borrow::Cow;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Cursor, Read, Seek, SeekFrom};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-#[derive(Deserialize, Debug, Clone, Copy)]
+#[derive(Deserialize, Eq, PartialEq, Hash, Debug, Clone, Copy)]
 pub enum ScalingMode {
     /// Fit into wxh if both are given.
     /// Only keeps aspect ratio if at most a single dimension is given
@@ -29,34 +31,6 @@ pub struct Bounds {
     pub mode: Option<ScalingMode>,
 }
 
-// use serde::de::{self, Visitor};
-
-// struct ImageFormatVisitor;
-
-// impl<'de> serde::de::Visitor<'de> for ImageFormatVisitor {
-//     type Value = ImageFormat;
-
-//     fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-//         formatter.write_str("a valid image format")
-//     }
-
-//     fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
-//     where
-//         E: de::Error,
-//     {
-//         Ok(ImageFormat::Jpeg)
-//     }
-// }
-
-// impl<'de> serde::Deserialize<'de> for ImageFormat {
-//     fn deserialize<D>(deserializer: D) -> Result<ImageFormat, D::Error>
-//     where
-//         D: serde::de::Deserializer<'de>,
-//     {
-//         deserializer.deserialize_string(I32Visitor)
-//     }
-// }
-
 // #[derive(Deserialize)]
 // #[serde(remote = "ImageFormat")]
 // enum ImageFormatDef {
@@ -75,17 +49,36 @@ pub struct Bounds {
 //     Farbfeld,
 //     Avif,
 // }
+//
+pub fn mime_of_format(format: ImageFormat) -> Option<mime::Mime> {
+    match format {
+        ImageFormat::Png => Some(mime::IMAGE_PNG),
+        ImageFormat::Jpeg => Some(mime::IMAGE_JPEG),
+        ImageFormat::Gif => Some(mime::IMAGE_GIF),
+        ImageFormat::WebP => "image/webp".parse().ok(),
+        ImageFormat::Pnm => "image/x-portable-bitmap".parse().ok(),
+        ImageFormat::Tiff => "image/tiff".parse().ok(),
+        ImageFormat::Tga => "image/x-tga".parse().ok(),
+        ImageFormat::Dds => "image/vnd-ms.dds".parse().ok(),
+        ImageFormat::Bmp => Some(mime::IMAGE_BMP),
+        ImageFormat::Ico => "image/x-icon".parse().ok(),
+        ImageFormat::Hdr => "image/vnd.radiance".parse().ok(),
+        ImageFormat::OpenExr => None,
+        ImageFormat::Farbfeld => None,
+        ImageFormat::Avif => "image/avif".parse().ok(),
+        _ => None,
+    }
+}
 
-fn from_image_format_ext<'de, D>(deserializer: D) -> Result<Option<ImageFormat>, D::Error>
+fn image_format_from_ext<'de, D>(deserializer: D) -> Result<Option<ImageFormat>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    let s: Option<&str> = Option::deserialize(deserializer)?;
-    // let s: &str = Deserialize::deserialize(deserializer)?;
+    let s: Option<Cow<'de, str>> = Option::deserialize(deserializer)?;
     match s {
         None => Ok(None),
         Some(s) => {
-            let fmt = ImageFormat::from_extension(s)
+            let fmt = ImageFormat::from_extension(s.as_ref())
                 .ok_or(image::error::UnsupportedError::from_format_and_kind(
                     image::error::ImageFormatHint::Unknown,
                     image::error::UnsupportedErrorKind::Format(
@@ -97,20 +90,25 @@ where
             Ok(Some(fmt))
         }
     }
-    // match s {
-    //     "test" => Ok(Some(ImageFormat::Jpeg)),
-    //     _ => Err(D::Error::custom(),
-    // }
-    // do better hex decoding than this
-    // u64::from_str_radix(&s[2..], 16).map_err(D::Error::custom)
 }
 
-#[derive(Deserialize, Debug, Clone, Copy)]
+fn url_from_string<'de, D>(deserializer: D) -> Result<Option<reqwest::Url>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let s: Option<Cow<'de, str>> = Option::deserialize(deserializer)?;
+    match s {
+        None => Ok(None),
+        Some(ref s) => Ok(Some(
+            reqwest::Url::parse(s).map_err(serde::de::Error::custom)?,
+        )),
+    }
+}
+
+#[derive(Deserialize, Eq, PartialEq, Hash, Debug, Clone, Copy)]
 pub struct Optimizations {
     /// quality value for JPEG (0 to 100)
     pub quality: Option<u8>,
-    // #[serde(flatten)]
-    // pub bounds: Bounds,
     /// width of the image
     pub width: Option<u32>,
     /// height of the image
@@ -119,8 +117,16 @@ pub struct Optimizations {
     pub mode: Option<ScalingMode>,
     /// encoding format
     #[serde(default)]
-    #[serde(deserialize_with = "from_image_format_ext")]
+    #[serde(deserialize_with = "image_format_from_ext")]
     pub format: Option<ImageFormat>,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct ExternalImage {
+    /// URL to the external image
+    #[serde(default)]
+    #[serde(deserialize_with = "url_from_string")]
+    pub image: Option<reqwest::Url>,
 }
 
 impl Optimizations {
@@ -140,15 +146,12 @@ pub enum Error {
 
     #[error("io error: `{0}`")]
     Io(#[from] std::io::Error),
+
+    #[error("fetch error: `{0}`")]
+    Fetch(#[from] reqwest::Error),
 }
 
 impl warp::reject::Reject for Error {}
-
-// impl From<image::ImageFormat> for super::headers::ContentType {
-//     fn from(f: image::ImageFormat) -> Self {
-//         super::headers::ContentType::from("test")
-//     }
-// }
 
 #[inline]
 pub fn clamp<T: PartialOrd>(input: T, min: T, max: T) -> T {
@@ -177,7 +180,6 @@ pub fn fit_to_bounds(width: u32, height: u32, bounds: &Bounds) -> Option<(u32, u
 
 #[derive(Debug)]
 pub struct Image {
-    // inner: RgbaImage,
     inner: DynamicImage,
     format: Option<ImageFormat>,
     size: (u32, u32),
@@ -187,11 +189,12 @@ const DEFAULT_JPEG_QUALITY: u8 = 70; // 1-100
 
 impl Image {
     pub fn new<R: std::io::BufRead + std::io::Seek>(reader: R) -> Result<Self, Error> {
+        let now = Instant::now();
         let reader = ImageReader::new(reader).with_guessed_format()?;
         let format = reader.format();
         let inner = reader.decode()?;
-        // .to_rgba8();
         let size = (inner.width(), inner.height());
+        println!("image decode took {:?}", now.elapsed());
         Ok(Self {
             inner,
             format,
@@ -276,31 +279,4 @@ impl Image {
         println!("encoding took {:?}", now.elapsed());
         Ok(())
     }
-
-    pub fn encode_jpeg(&mut self, quality: u8) {
-        // let mut encoder = JpegEncoder::new_with_quality(&mut file, quality.unwrap_or(80));
-        // encoder.encode_image(&DynamicImage::ImageRgba8(buffer))?;
-    }
 }
-
-// let output_path = self.get_output_path(output_path)?;
-//         println!("saving to {}...", output_path.display());
-//         let mut file = File::create(&output_path)?;
-//         encoder.encode_image(&DynamicImage::ImageRgba8(buffer))?;
-//
-// resize the image to fit the screen
-// let (mut fit_width, mut fit_height) = utils::resize_dimensions(
-//     photo.width(),
-//     photo.height(),
-//     size.width,
-//     size.height,
-//     false,
-// );
-
-// if let Some(scale_factor) = options.scale_factor {
-//     // scale the image by factor
-//     fit_width = (fit_width as f32 * utils::clamp(scale_factor, 0f32, 1f32)) as u32;
-//     fit_height = (fit_height as f32 * utils::clamp(scale_factor, 0f32, 1f32)) as u32;
-//     // println!("scaling to {} x {}", fit_width, fit_height);
-// };
-// }

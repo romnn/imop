@@ -1,21 +1,27 @@
+#![allow(warnings)]
+
 use anyhow::Result;
 use clap::Parser;
-use futures_util::StreamExt;
+use futures::io::AsyncReadExt;
+use futures::stream::{StreamExt, TryStreamExt};
 use imop::cache::InMemoryCache;
+use imop::compression;
 use imop::conditionals::{conditionals, Conditionals};
-use imop::file::{file_stream, path_from_tail, serve_file, ArcPath, File};
+use imop::file::{file_stream, path_from_tail, serve_file, ArcPath, File, FileOrigin};
 use imop::headers::HeaderMapExt;
 use imop::headers::{AcceptRanges, ContentLength, ContentType};
-use imop::image::{Image, ImageFormat, Optimizations};
+use imop::image::{mime_of_format, ExternalImage, Image, ImageFormat, Optimizations};
+use mime_guess::mime;
 use serde::Deserialize;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::io::AsyncBufReadExt;
 use tokio::signal;
 use warp::{Filter, Rejection};
 
 #[derive(Parser)]
-pub struct Options {
+struct Options {
     #[clap(short = 'i', long = "images", help = "image source path")]
     image_path: PathBuf,
 
@@ -23,99 +29,164 @@ pub struct Options {
     port: u16,
 }
 
-async fn file_reply<K, V>(
+// #[derive(Eq, PartialEq, Hash)]
+// enum Resource {
+//     Url(String),
+//     Path(PathBuf),
+// }
+
+#[derive(Eq, PartialEq, Hash)]
+struct CacheKey {
+    origin: FileOrigin,
+    optimizations: Optimizations,
+}
+
+async fn serve_static_file<K, V>(
     path: ArcPath,
     conditionals: Conditionals,
     optimizations: Optimizations,
-    cache: InMemoryCache<K, V>,
+    cache: Arc<InMemoryCache<K, V>>,
 ) -> Result<File, Rejection> {
     println!("{:?}", path);
     println!("{:?}", optimizations);
 
-    let mut img = Image::open(&path)?;
-    // let mime =
-    let mut encoded = std::io::Cursor::new(Vec::new());
-    img.resize(&optimizations.bounds());
-    img.encode(&mut encoded, ImageFormat::Jpeg, optimizations.quality)?;
-    let len = encoded.position() as u64;
-    encoded.set_position(0);
-    let stream = file_stream(encoded, (0, len), None);
-    let body = warp::hyper::Body::wrap_stream(stream);
-    let mut resp = warp::reply::Response::new(body);
+    let mime = mime_guess::from_path(path.as_ref()).first_or_octet_stream();
+    println!("{}", mime);
 
-    // let mime = mime_guess::from_path(path.as_ref()).first_or_octet_stream();
+    match mime.type_() {
+        mime::IMAGE => {
+            let mut img = Image::open(&path)?;
+            let mut encoded = std::io::Cursor::new(Vec::new());
+            let target_format = optimizations
+                .format
+                .or(img.format())
+                .unwrap_or(ImageFormat::Jpeg);
 
-    resp.headers_mut()
-        .typed_insert(imop::headers::ContentLength(len as u64));
-    // resp.headers_mut().typed_insert(imop::headers::ContentType::from(mime));
-    resp.headers_mut()
-        .typed_insert(imop::headers::AcceptRanges::bytes());
+            img.resize(&optimizations.bounds());
+            img.encode(&mut encoded, target_format, optimizations.quality)?;
 
-    Ok(File { resp, path })
-    // todo: need to get the mime type
-    // todo: parse the compression options
-    // todo: look up if the file was already compressed, if so, get it from the disk cache
-    // todo: if not, compress and save to cache
-    // todo: serve the correct file
-    // let conditionals = Conditionals::default();
-    // serve_file(path, conditionals).await
+            let len = encoded.position() as u64;
+            encoded.set_position(0);
+            let stream = file_stream(encoded, (0, len), None);
+            let body = warp::hyper::Body::wrap_stream(stream);
+            let mut resp = warp::reply::Response::new(body);
+
+            resp.headers_mut()
+                .typed_insert(imop::headers::ContentLength(len as u64));
+            resp.headers_mut()
+                .typed_insert(imop::headers::ContentType::from(
+                    mime_of_format(target_format).unwrap_or(mime::IMAGE_STAR),
+                ));
+            resp.headers_mut()
+                .typed_insert(imop::headers::AcceptRanges::bytes());
+
+            Ok(File {
+                resp,
+                origin: FileOrigin::Path(path),
+            })
+        }
+        _ => serve_file(path, conditionals).await,
+    }
+}
+
+async fn fetch_and_serve_file<K, V>(
+    optimizations: Optimizations,
+    external_image: ExternalImage,
+    cache: Arc<InMemoryCache<K, V>>,
+) -> Result<File, Rejection> {
+    match external_image.image {
+        Some(url) => {
+            let now = Instant::now();
+            let res = reqwest::get(url.clone())
+                .await
+                .map_err(imop::image::Error::from)?;
+            let mut data = Vec::new();
+            let mut reader = futures::io::BufReader::new(
+                res.bytes_stream()
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+                    .into_async_read(),
+            );
+            reader
+                .read_to_end(&mut data)
+                .await
+                .map_err(imop::image::Error::from)?;
+            println!("download of {} took {:?}", &url, now.elapsed());
+
+            let mut img = Image::new(std::io::Cursor::new(data))?;
+            let mut encoded = std::io::Cursor::new(Vec::new());
+            let target_format = optimizations
+                .format
+                .or(img.format())
+                .unwrap_or(ImageFormat::Jpeg);
+
+            img.resize(&optimizations.bounds());
+            img.encode(&mut encoded, target_format, optimizations.quality)?;
+
+            let len = encoded.position() as u64;
+            encoded.set_position(0);
+            let stream = file_stream(encoded, (0, len), None);
+            let body = warp::hyper::Body::wrap_stream(stream);
+            let mut resp = warp::reply::Response::new(body);
+
+            resp.headers_mut()
+                .typed_insert(imop::headers::ContentLength(len as u64));
+            resp.headers_mut()
+                .typed_insert(imop::headers::ContentType::from(
+                    mime_of_format(target_format).unwrap_or(mime::IMAGE_STAR),
+                ));
+            resp.headers_mut()
+                .typed_insert(imop::headers::AcceptRanges::bytes());
+
+            Ok(File {
+                resp,
+                origin: FileOrigin::Url(url),
+            })
+        }
+        None => Err(warp::reject::reject()),
+    }
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let options: Options = Options::parse();
     let base = Arc::new(options.image_path);
+    let cache: Arc<InMemoryCache<CacheKey, String>> = Arc::new(InMemoryCache::new(Some(10)));
 
-    let cache = InMemoryCache::new(Some(10));
-
+    let cache_clone = cache.clone();
     let static_images = warp::path("static")
         .or(warp::head())
         .unify()
         .and(path_from_tail(base))
         .and(conditionals())
         .and(warp::query::<Optimizations>())
-        .and(warp::any().map(move || cache))
-        .and_then(file_reply);
+        .and(warp::any().map(move || cache_clone.clone()))
+        .and_then(serve_static_file)
+        .with(warp::wrap_fn(compression::auto(
+            compression::Level::Best,
+            compression::CompressContentType::default(),
+        )));
 
-    // let fetch_images = warp::get()
-    //     .or(warp::head())
-    //     .unify()
-    //     // .and(path_from_tail(base))
-    //     .and(warp::query::<Optimizations>())
-    //     .and(warp::any().map(move || cache))
-    //     .and_then(file_reply);
-
-    // .then(|path: ArcPath, optimizations: Optimizations| async move {
-    //     // check if the request is cached
-    //     // return
-    //     // if true {
-    //     //     println!("found in cache");
-    //     //     return Err(warp::reject::not_found());
-    //     // }
-    //     // // println!("serving the real file");
-    //     let cached = false
-    //     (path, optimizations, cached)
-    // })
-    // .and_then(|(path, optimizations)| async move {
-    //     // : ArcPath, optimizations: Optimizations)| async move {
-    //     println!("serving the real file");
-    //     Ok::<warp::http::status::StatusCode, std::convert::Infallible>(
-    //         warp::http::status::StatusCode::OK,
-    //     )
-    //     // Ok(warp::reply::html("hello"))
-    //     // Ok::<String, Rejection>(warp::reply())
-    //     // return Err(warp::reject::not_found());
-    //     // Ok((path, optimizations))
-    // });
-    // .and_then(cache);
-    // .or(file_reply);
+    let cache_clone = cache.clone();
+    let fetch_images = warp::path::end()
+        .or(warp::head())
+        .unify()
+        .and(warp::query::<Optimizations>())
+        .and(warp::query::<ExternalImage>())
+        .and(warp::any().map(move || cache_clone.clone()))
+        .and_then(fetch_and_serve_file)
+        .with(warp::wrap_fn(compression::auto(
+            compression::Level::Best,
+            compression::CompressContentType::default(),
+        )));
 
     let shutdown = async move {
         signal::ctrl_c().await.expect("shutdown server");
         println!("server shutting down");
     };
     let addr = ([0, 0, 0, 0], options.port);
-    let (_, server) = warp::serve(static_images).bind_with_graceful_shutdown(addr, shutdown);
+    let routes = static_images.or(fetch_images);
+    let server = warp::serve(routes).run(addr);
+    // let (_, server) = warp::serve(static_images).bind_with_graceful_shutdown(addr, shutdown);
 
     server.await;
     Ok(())
