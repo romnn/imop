@@ -4,7 +4,7 @@ use anyhow::Result;
 use clap::Parser;
 use futures::io::AsyncReadExt;
 use futures::stream::{StreamExt, TryStreamExt};
-use imop::cache::InMemoryCache;
+use imop::cache::{Cache, CachedImage, InMemoryCache};
 use imop::compression;
 use imop::conditionals::{conditionals, Conditionals};
 use imop::file::{file_stream, path_from_tail, serve_file, ArcPath, File, FileOrigin};
@@ -13,6 +13,8 @@ use imop::headers::{AcceptRanges, ContentLength, ContentType};
 use imop::image::{mime_of_format, ExternalImage, Image, ImageFormat, Optimizations};
 use mime_guess::mime;
 use serde::Deserialize;
+use std::hash::Hash;
+use std::ops::Deref;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -29,29 +31,36 @@ struct Options {
     port: u16,
 }
 
-// #[derive(Eq, PartialEq, Hash)]
-// enum Resource {
-//     Url(String),
-//     Path(PathBuf),
-// }
-
 #[derive(Eq, PartialEq, Hash)]
-struct CacheKey {
-    origin: FileOrigin,
-    optimizations: Optimizations,
+enum CacheKey {
+    // Source(&'a FileOrigin),
+    // Optimized {
+    //     origin: &'a FileOrigin,
+    //     optimizations: &'a Optimizations,
+    // },
+    Source(FileOrigin),
+    Optimized {
+        origin: FileOrigin,
+        optimizations: Optimizations,
+    },
+    // origin: FileOrigin,
+    // optimizations: Optimizations,
 }
 
-async fn serve_static_file<K, V>(
+async fn serve_static_file(
     path: ArcPath,
     conditionals: Conditionals,
     optimizations: Optimizations,
-    cache: Arc<InMemoryCache<K, V>>,
-) -> Result<File, Rejection> {
-    println!("{:?}", path);
-    println!("{:?}", optimizations);
+    cache: Arc<InMemoryCache<CacheKey>>,
+) -> Result<File, Rejection>
+// where
+//     K: Hash + Eq,
+{
+    imop::debug!("{:?}", &path);
+    imop::debug!("{:?}", &optimizations);
 
     let mime = mime_guess::from_path(path.as_ref()).first_or_octet_stream();
-    println!("{}", mime);
+    imop::debug!("{}", &mime);
 
     match mime.type_() {
         mime::IMAGE => {
@@ -89,30 +98,87 @@ async fn serve_static_file<K, V>(
     }
 }
 
-async fn fetch_and_serve_file<K, V>(
+async fn fetch_and_serve_file(
     optimizations: Optimizations,
     external_image: ExternalImage,
-    cache: Arc<InMemoryCache<K, V>>,
+    cache: Arc<InMemoryCache<CacheKey>>,
 ) -> Result<File, Rejection> {
+    imop::debug!("image = {:?}", &external_image);
+    imop::debug!("optimizations = {:?}", &optimizations);
+
     match external_image.image {
         Some(url) => {
-            let now = Instant::now();
-            let res = reqwest::get(url.clone())
-                .await
-                .map_err(imop::image::Error::from)?;
-            let mut data = Vec::new();
-            let mut reader = futures::io::BufReader::new(
-                res.bytes_stream()
-                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
-                    .into_async_read(),
-            );
-            reader
-                .read_to_end(&mut data)
-                .await
-                .map_err(imop::image::Error::from)?;
-            println!("download of {} took {:?}", &url, now.elapsed());
+            let origin = FileOrigin::Url(url.clone());
+            // let key = CacheKey {
+            //     origin: &origin,
+            //     optimizations: &optimizations, // .clone(),
+            // };
 
-            let mut img = Image::new(std::io::Cursor::new(data))?;
+            let now = Instant::now();
+
+            // lookup in the cache
+            // let data = match cache.deref().get(&CacheKey::Source(&origin)) {
+            // let data = match cache.deref().get(&CacheKey::Source(origin.clone())) {
+            // let data = match cache.get(&CacheKey::Source(origin.clone())).await {
+
+            // fast path: check if optimized image is cached
+            if let Some(cached) = cache.get(&CacheKey::Optimized {
+                origin: origin.clone(),
+                optimizations,
+            }) {
+                let target_format = optimizations
+                    .format
+                    .or(cached.format())
+                    .unwrap_or(ImageFormat::Jpeg);
+
+                let stream = file_stream(cached.data(), (0, 0), None);
+                let body = warp::hyper::Body::wrap_stream(stream);
+                let mut resp = warp::reply::Response::new(body);
+
+                // resp.headers_mut()
+                //     .typed_insert(imop::headers::ContentLength(len as u64));
+                resp.headers_mut()
+                    .typed_insert(imop::headers::ContentType::from(
+                        mime_of_format(target_format).unwrap_or(mime::IMAGE_STAR),
+                    ));
+                resp.headers_mut()
+                    .typed_insert(imop::headers::AcceptRanges::bytes());
+
+                return Ok(File {
+                    resp,
+                    origin: FileOrigin::Url(url),
+                });
+            };
+
+            let key = CacheKey::Source(origin.clone());
+            let mut img = match cache.get(&key) {
+                // Some(cached) => &cached as &(dyn tokio::io::AsyncRead + tokio::io::AsyncSeek),
+                Some(cached) => Image::new(cached.data())?,
+                None => {
+                    let res = reqwest::get(url.clone()) // url.clone())
+                        .await
+                        .map_err(imop::image::Error::from)?;
+                    let mut data = Vec::new();
+                    let mut reader = futures::io::BufReader::new(
+                        res.bytes_stream()
+                            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+                            .into_async_read(),
+                    );
+                    reader
+                        .read_to_end(&mut data)
+                        .await
+                        .map_err(imop::image::Error::from)?;
+                    imop::debug!("download of {} took {:?}", &url, now.elapsed());
+                    let img = Image::new(std::io::Cursor::new(&data))?;
+
+                    // add source image to cache
+                    cache.put(key, std::io::Cursor::new(&data), img.format());
+                    img
+                    // &std::io::Cursor::new(data)
+                    //     as &(dyn tokio::io::AsyncRead + tokio::io::AsyncSeek)
+                }
+            };
+
             let mut encoded = std::io::Cursor::new(Vec::new());
             let target_format = optimizations
                 .format
@@ -150,7 +216,18 @@ async fn fetch_and_serve_file<K, V>(
 async fn main() -> Result<()> {
     let options: Options = Options::parse();
     let base = Arc::new(options.image_path);
-    let cache: Arc<InMemoryCache<CacheKey, String>> = Arc::new(InMemoryCache::new(Some(10)));
+    // let cache: Arc<InMemoryCache<CacheKey, Vec<u8>>> = Arc::new(InMemoryCache::new(Some(10)));
+    // let cache: Arc<InMemoryCache<CacheKey, futures::io::Cursor<Vec<u8>>>> =
+
+    // those all implement asyncread which is good
+    // but we should not specify file and cursor
+    // we should never clone cursors as then we copy
+    // also we should not reuse the same cursor because that would be unsafe
+    // let cache: Arc<InMemoryCache<CacheKey, std::io::Cursor<Vec<u8>>>> =
+    let cache: Arc<InMemoryCache<CacheKey>> = Arc::new(InMemoryCache::new(Some(10)));
+
+    // let cache2: Arc<InMemoryCache<CacheKey, tokio::fs::File>> =
+    let cache2: Arc<InMemoryCache<CacheKey>> = Arc::new(InMemoryCache::new(Some(10)));
 
     let cache_clone = cache.clone();
     let static_images = warp::path("static")
@@ -185,9 +262,6 @@ async fn main() -> Result<()> {
     };
     let addr = ([0, 0, 0, 0], options.port);
     let routes = static_images.or(fetch_images);
-    let server = warp::serve(routes).run(addr);
-    // let (_, server) = warp::serve(static_images).bind_with_graceful_shutdown(addr, shutdown);
-
-    server.await;
+    warp::serve(routes).run(addr).await;
     Ok(())
 }

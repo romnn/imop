@@ -31,25 +31,6 @@ pub struct Bounds {
     pub mode: Option<ScalingMode>,
 }
 
-// #[derive(Deserialize)]
-// #[serde(remote = "ImageFormat")]
-// enum ImageFormatDef {
-//     Png,
-//     Jpeg,
-//     Gif,
-//     WebP,
-//     Pnm,
-//     Tiff,
-//     Tga,
-//     Dds,
-//     Bmp,
-//     Ico,
-//     Hdr,
-//     OpenExr,
-//     Farbfeld,
-//     Avif,
-// }
-//
 pub fn mime_of_format(format: ImageFormat) -> Option<mime::Mime> {
     match format {
         ImageFormat::Png => Some(mime::IMAGE_PNG),
@@ -194,7 +175,7 @@ impl Image {
         let format = reader.format();
         let inner = reader.decode()?;
         let size = (inner.width(), inner.height());
-        println!("image decode took {:?}", now.elapsed());
+        crate::debug!("image decode took {:?}", now.elapsed());
         Ok(Self {
             inner,
             format,
@@ -213,7 +194,7 @@ impl Image {
             self.inner = self
                 .inner
                 .resize_exact(w, h, imageops::FilterType::Lanczos3);
-            println!("fitting to {} x {} took {:?}", w, h, now.elapsed());
+            crate::debug!("fitting to {} x {} took {:?}", w, h, now.elapsed());
         };
     }
 
@@ -276,7 +257,7 @@ impl Image {
                 ),
             ))),
         }?;
-        println!("encoding took {:?}", now.elapsed());
+        crate::debug!("encoding took {:?}", now.elapsed());
         Ok(())
     }
 }

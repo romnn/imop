@@ -22,9 +22,12 @@ tokio-util = { version = "0.7", features = ["io"] }
 warp = { version = "0.3", features = ["multipart"] }
 async-compression = { version = "0.3", features = ["tokio", "brotli", "deflate", "gzip"], optional = true }
 anyhow = "1"
+async-trait = "0.1"
 serde_json = "1"
 lazy_static = "1"
 futures-util = "0.3"
+parking_lot = "0.12"
+caches = "0.2"
 futures = "0.3"
 urlencoding = "2"
 reqwest = { version = "0.11", features = [ "stream" ] }

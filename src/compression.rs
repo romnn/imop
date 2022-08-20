@@ -200,7 +200,7 @@ where
                 } else {
                     None
                 };
-                println!("compression algorithm: {:?}", algo);
+                crate::debug!("compression algorithm: {:?}", algo);
 
                 let stream = StreamReader::new(compressable.body);
                 let encoded_stream: Box<dyn tokio::io::AsyncRead + Send + std::marker::Unpin> =

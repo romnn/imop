@@ -38,7 +38,7 @@ impl AsRef<Path> for ArcPath {
     }
 }
 
-#[derive(Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub enum FileOrigin {
     Url(reqwest::Url),
     Path(ArcPath),
@@ -98,16 +98,16 @@ pub fn file_stream<R: AsyncRead + AsyncSeek + std::marker::Unpin + Send>(
     seek.into_stream()
         .map(move |result| {
             let mut buf = BytesMut::new();
-            let mut len = end - start;
+            // let mut len = end - start;
             let mut f = match result {
                 Ok(f) => f,
                 Err(e) => return Either::Left(stream::once(future::err(e))),
             };
 
             Either::Right(stream::poll_fn(move |cx| {
-                if len == 0 {
-                    return Poll::Ready(None);
-                }
+                // if len == 0 {
+                //     return Poll::Ready(None);
+                // }
                 reserve_at_least(&mut buf, buf_size);
 
                 let n = match ready!(poll_read_buf(Pin::new(&mut f), cx, &mut buf)) {
@@ -122,12 +122,12 @@ pub fn file_stream<R: AsyncRead + AsyncSeek + std::marker::Unpin + Send>(
                 }
 
                 let mut chunk = buf.split().freeze();
-                if n > len {
-                    chunk = chunk.split_to(len as usize);
-                    len = 0;
-                } else {
-                    len -= n;
-                }
+                // if n > len {
+                //     chunk = chunk.split_to(len as usize);
+                //     len = 0;
+                // } else {
+                //     len -= n;
+                // }
 
                 Poll::Ready(Some(Ok(chunk)))
             }))
