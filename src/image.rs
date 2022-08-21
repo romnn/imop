@@ -1,3 +1,4 @@
+use super::headers::HeaderMapExt;
 pub use image::ImageFormat;
 use image::{
     codecs, imageops, io::Reader as ImageReader, DynamicImage, ImageEncoder, ImageOutputFormat,
@@ -127,12 +128,7 @@ pub enum Error {
 
     #[error("io error: `{0}`")]
     Io(#[from] std::io::Error),
-
-    #[error("fetch error: `{0}`")]
-    Fetch(#[from] reqwest::Error),
 }
-
-impl warp::reject::Reject for Error {}
 
 #[inline]
 pub fn clamp<T: PartialOrd>(input: T, min: T, max: T) -> T {
@@ -159,6 +155,8 @@ pub fn fit_to_bounds(width: u32, height: u32, bounds: &Bounds) -> Option<(u32, u
     }
 }
 
+const DEFAULT_JPEG_QUALITY: u8 = 70; // 1-100
+
 #[derive(Debug)]
 pub struct Image {
     inner: DynamicImage,
@@ -166,7 +164,59 @@ pub struct Image {
     size: (u32, u32),
 }
 
-const DEFAULT_JPEG_QUALITY: u8 = 70; // 1-100
+#[derive(Debug)]
+pub struct EncodedImage {
+    pub buffer: Vec<u8>,
+    pub format: image::ImageFormat,
+}
+
+impl warp::Reply for EncodedImage {
+    fn into_response(self) -> warp::reply::Response {
+        let len = self.buffer.len() as u64;
+        let buffer = std::io::Cursor::new(self.buffer);
+        let stream = super::file::file_stream(buffer, (0, len), None);
+        let body = warp::hyper::Body::wrap_stream(stream);
+        let mut resp = warp::reply::Response::new(body);
+
+        resp.headers_mut()
+            .typed_insert(super::headers::ContentLength(len));
+        resp.headers_mut()
+            .typed_insert(super::headers::ContentType::from(
+                mime_of_format(self.format).unwrap_or(mime::IMAGE_STAR),
+            ));
+        resp.headers_mut()
+            .typed_insert(super::headers::AcceptRanges::bytes());
+        resp
+    }
+}
+
+// impl From<EncodedImage> for super::file::File {
+//     fn from(image: EncodedImage) -> Self {
+//         // CliError::IoError(error)
+//         superFile {
+//             image.into_response(),
+//             origin:
+//     }
+// }
+
+// impl warp::Reply for Image {
+//     fn into_response(self) -> warp::Response {
+//         self.encoded
+//         let stream = file_stream(self.buffer, (0, self.buffer.len()), None);
+//         let body = warp::hyper::Body::wrap_stream(stream);
+//         let mut resp = warp::reply::Response::new(body);
+
+//         resp.headers_mut()
+//             .typed_insert(imop::headers::ContentLength(self.buffer.len()));
+//         resp.headers_mut()
+//             .typed_insert(imop::headers::ContentType::from(
+//                 mime_of_format(self.format).unwrap_or(mime::IMAGE_STAR),
+//             ));
+//         resp.headers_mut()
+//             .typed_insert(imop::headers::AcceptRanges::bytes());
+//         resp
+//     }
+// }
 
 impl Image {
     pub fn new<R: std::io::BufRead + std::io::Seek>(reader: R) -> Result<Self, Error> {
@@ -182,6 +232,20 @@ impl Image {
             size,
         })
     }
+
+    // pub fn content_length(&self) -> usize {
+    // }
+    // pub fn into_response(self) -> warp::Response {
+    //     // self.resp
+    //     // resp.headers_mut()
+    //     //     .typed_insert(imop::headers::ContentLength(len as u64));
+    //     // resp.headers_mut()
+    //     //     .typed_insert(imop::headers::ContentType::from(
+    //     //         mime_of_format(target_format).unwrap_or(mime::IMAGE_STAR),
+    //     //     ));
+    //     // resp.headers_mut()
+    //     //     .typed_insert(imop::headers::AcceptRanges::bytes());
+    // }
 
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
         Self::new(BufReader::new(File::open(path)?))
@@ -202,41 +266,38 @@ impl Image {
         self.format
     }
 
-    pub fn encode<W: std::io::Write + Seek>(
+    pub fn encode_to<W: std::io::Write + Seek>(
         &self,
         w: &mut W,
         format: ImageFormat,
         quality: Option<u8>,
     ) -> Result<(), Error> {
         let now = Instant::now();
-        let buf = self.inner.as_bytes();
-        // let buf = match self.inner {
-        //     DynamicImage::ImageLuma8(img) => img.inner_pixels().as_bytes(),
-        // };
+        let data = self.inner.as_bytes();
         let color = self.inner.color();
         let width = self.inner.width();
         let height = self.inner.height();
         match format.into() {
             ImageOutputFormat::Png => codecs::png::PngEncoder::new(w)
-                .write_image(buf, width, height, color)
+                .write_image(data, width, height, color)
                 .map_err(Error::from),
             ImageOutputFormat::Jpeg(_) => {
                 let quality = quality.unwrap_or(DEFAULT_JPEG_QUALITY);
                 codecs::jpeg::JpegEncoder::new_with_quality(w, quality)
-                    .write_image(buf, width, height, color)
+                    .write_image(data, width, height, color)
                     .map_err(Error::from)
             }
             ImageOutputFormat::Gif => codecs::gif::GifEncoder::new(w)
-                .encode(buf, width, height, color)
+                .encode(data, width, height, color)
                 .map_err(Error::from),
             ImageOutputFormat::Ico => codecs::ico::IcoEncoder::new(w)
-                .write_image(buf, width, height, color)
+                .write_image(data, width, height, color)
                 .map_err(Error::from),
             ImageOutputFormat::Bmp => codecs::bmp::BmpEncoder::new(w)
-                .write_image(buf, width, height, color)
+                .write_image(data, width, height, color)
                 .map_err(Error::from),
             ImageOutputFormat::Tiff => codecs::tiff::TiffEncoder::new(w)
-                .write_image(buf, width, height, color)
+                .write_image(data, width, height, color)
                 .map_err(Error::from),
             ImageOutputFormat::Unsupported(msg) => {
                 Err(Error::from(image::error::ImageError::Unsupported(
@@ -259,5 +320,14 @@ impl Image {
         }?;
         crate::debug!("encoding took {:?}", now.elapsed());
         Ok(())
+    }
+
+    pub fn encode(&self, format: ImageFormat, quality: Option<u8>) -> Result<EncodedImage, Error> {
+        let mut buffer = std::io::Cursor::new(Vec::new());
+        self.encode_to(&mut buffer, format, quality)?;
+        Ok(EncodedImage {
+            buffer: buffer.into_inner(),
+            format,
+        })
     }
 }

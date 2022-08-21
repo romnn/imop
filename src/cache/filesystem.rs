@@ -11,8 +11,32 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::io::AsyncReadExt;
 
-struct CacheFile {
+pub struct FileImage {
     path: PathBuf,
+}
+
+#[async_trait]
+impl CachedImage for FileImage {
+    type Data = tokio::fs::File;
+
+    async fn format(&self) -> image::ImageFormat {
+        let mime = mime_guess::from_path(&self.path).first();
+        let format = mime.and_then(image::ImageFormat::from_mime_type);
+        format.unwrap_or(image::ImageFormat::Jpeg)
+    }
+
+    async fn content_length(&self) -> Result<usize, Error> {
+        // get the file size
+        let file = tokio::fs::File::open(&self.path)
+            .await
+            .map_err(Error::from)?;
+        let meta = file.metadata().await.map_err(Error::from)?;
+        Ok(meta.len() as usize)
+    }
+
+    async fn data(&self) -> Result<Self::Data, Error> {
+        tokio::fs::File::open(&self.path).await.map_err(Error::from)
+    }
 }
 
 struct EvictionHandler {}
@@ -27,7 +51,7 @@ pub struct FileSystemImageCache<K>
 where
     K: Hash + Eq,
 {
-    inner: caches::RawLRU<K, CacheFile, EvictionHandler>,
+    inner: caches::RawLRU<K, FileImage, EvictionHandler>,
     cache_dir: PathBuf,
 }
 
@@ -51,5 +75,3 @@ where
 //     fn get(&self, k: &K) -> Option<MappedRwLockWriteGuard<'_, IMData>> {
 //     }
 // }
-
-

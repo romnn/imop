@@ -26,12 +26,6 @@ use warp::{Filter, Reply};
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct ArcPath(Arc<PathBuf>);
 
-// impl ArcPath {
-//     fn into_inner(self) -> PathBuf {
-//         self.0.into_inner()
-//     }
-// }
-
 impl AsRef<Path> for ArcPath {
     fn as_ref(&self) -> &Path {
         (*self.0).as_ref()
@@ -47,7 +41,6 @@ pub enum FileOrigin {
 #[derive(Debug)]
 pub struct File {
     pub resp: Response,
-    // pub path: ArcPath,
     pub origin: FileOrigin,
 }
 

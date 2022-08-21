@@ -9,15 +9,11 @@ use std::ops::Index;
 use std::rc::Rc;
 
 #[derive(Debug)]
-// pub struct LFUCache<'a, K, V>
 pub struct LFUCache<K, V>
 where
     K: Hash + Eq,
 {
-    // values: HashMap<Rc<K>, ValueCounter<V>>,
     values: HashMap<K, ValueCounter<V>>,
-    // frequency_bin: HashMap<usize, LinkedHashSet<Rc<K>>>,
-    // frequency_bin: HashMap<usize, LinkedHashSet<K>>,
     frequency_bin: HashMap<usize, LinkedHashSet<K>>,
     capacity: Option<usize>,
     min_frequency: usize,
@@ -44,8 +40,7 @@ impl<V> ValueCounter<V> {
 
 impl<K, V> LFUCache<K, V>
 where
-    K: std::fmt::Debug + Hash + Eq,
-    V: std::fmt::Debug,
+    K: Hash + Eq,
 {
     pub fn with_capacity(capacity: usize) -> LFUCache<K, V> {
         LFUCache {
@@ -59,60 +54,45 @@ where
     fn update_frequency_bin<'a, Q>(&mut self, k: &'a Q)
     where
         K: Borrow<Q>,
-        Q: ToOwned<Owned = K> + Eq + Hash + ?Sized + std::fmt::Debug,
+        Q: ToOwned<Owned = K> + Eq + Hash + ?Sized,
     {
-        println!("{:?}", self.values);
-        println!("{:?}", k);
-
         if let Some(value_counter) = self.values.get_mut(k) {
-            let bin = self.frequency_bin.get_mut(&value_counter.count).unwrap();
-            bin.remove(k);
-            let count = value_counter.count;
-            value_counter.inc();
-            if count == self.min_frequency && bin.is_empty() {
-                self.min_frequency += 1;
+            if let Some(bin) = self.frequency_bin.get_mut(&value_counter.count) {
+                bin.remove(k);
+                let count = value_counter.count;
+                value_counter.inc();
+                if count == self.min_frequency && bin.is_empty() {
+                    self.min_frequency += 1;
+                }
+                self.frequency_bin
+                    .entry(count + 1)
+                    .or_default()
+                    .insert(k.to_owned());
             }
-            self.frequency_bin
-                .entry(count + 1)
-                .or_default()
-                .insert(k.to_owned());
         }
     }
 
     fn evict(&mut self) {
-        println!("evict");
-        let least_frequently_used_keys = self.frequency_bin.get_mut(&self.min_frequency).unwrap();
-        let least_recently_used = least_frequently_used_keys.pop_front().unwrap();
-        // this leaves the frequency untouched
-
-        // let value_counter = self.values.get_mut(k).unwrap();
-        // let bin = self.frequency_bin.get_mut(&value_counter.count).unwrap();
-        // bin.remove(k);
-        // let count = value_counter.count;
-
-        if let Some(value_counter) = self.values.remove(&least_recently_used) {
-            let bin = self.frequency_bin.get_mut(&value_counter.count).unwrap();
-            bin.remove(&least_recently_used);
+        let least_frequently_used_keys = self.frequency_bin.get_mut(&self.min_frequency);
+        if let Some(least_recently_used) =
+            least_frequently_used_keys.and_then(|keys| keys.pop_front())
+        {
+            if let Some(value_counter) = self.values.remove(&least_recently_used) {
+                let bin = self.frequency_bin.get_mut(&value_counter.count).unwrap();
+                bin.remove(&least_recently_used);
+            }
         }
     }
 }
 
 impl<K, V> Cache<K, V> for LFUCache<K, V>
 where
-    K: std::fmt::Debug + Clone + Hash + Eq,
-    V: std::fmt::Debug,
+    K: Clone + Hash + Eq,
 {
-    // type Iter = LfuIterator<'b, K, V>;
-
     fn put(&mut self, k: K, v: V) -> PutResult<K, V> {
-        // let key = Rc::new(key);
         if let Some(counter) = self.values.get_mut(&k) {
-            // let old_value = counter.value;
-            // let result = PutResult::Update(counter.value);
             counter.value = v;
-            self.update_frequency_bin(&k); // Rc::clone(&key));
-                                           // return PutResult::Update(old_value);
-                                           // return result;
+            self.update_frequency_bin(&k);
             return PutResult::Update;
         }
         if let Some(capacity) = self.capacity {
@@ -122,7 +102,6 @@ where
         }
         self.values
             .insert(k.clone(), ValueCounter { value: v, count: 1 });
-        // .insert(Rc::clone(&key), ValueCounter { value, count: 1 });
         self.min_frequency = 1;
         self.frequency_bin
             .entry(self.min_frequency)
@@ -134,33 +113,23 @@ where
     fn get<'a, Q>(&'a mut self, k: &'a Q) -> Option<&'a V>
     where
         K: Borrow<Q>,
-        // Q: ToOwned<Owned = K>,
-        Q: ToOwned<Owned = K> + Eq + Hash + ?Sized + Clone + std::fmt::Debug,
-        // Q: Eq + Hash + ?Sized,
+        Q: ToOwned<Owned = K> + Eq + Hash + ?Sized + Clone,
     {
-        // let key = self.values.get_key_value(k);
-        // .map(|(r, _)| Rc::clone(r))?;
-        self.update_frequency_bin(k); // Rc::clone(&key));
+        self.update_frequency_bin(k);
         self.values.get(k).map(|x| &x.value)
-        // None
     }
 
     fn get_mut<'a, Q>(&'a mut self, k: &'a Q) -> Option<&'a mut V>
     where
-        // Q: ToOwned<Owned = K>,
         K: Borrow<Q>,
-        Q: ToOwned<Owned = K> + Eq + Hash + ?Sized + Clone + std::fmt::Debug,
-        // Q: Eq + Hash + ?Sized,
+        Q: ToOwned<Owned = K> + Eq + Hash + ?Sized + Clone,
     {
-        // None
-        // let key = self.values.get_key_value(key).map(|(r, _)| Rc::clone(r))?;
-        self.update_frequency_bin(k); // Rc::clone(&key));
+        self.update_frequency_bin(k);
         self.values.get_mut(k).map(|x| &mut x.value)
     }
 
     fn peek<'a, Q>(&self, k: &'a Q) -> Option<&'a V>
     where
-        // Q: ToOwned<Owned = K>,
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
@@ -169,7 +138,6 @@ where
 
     fn peek_mut<'a, Q>(&mut self, k: &'a Q) -> Option<&'a mut V>
     where
-        // Q: ToOwned<Owned = K>,
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
@@ -178,7 +146,6 @@ where
 
     fn contains<Q>(&self, k: &Q) -> bool
     where
-        // Q: ToOwned<Owned = K>,
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
@@ -187,7 +154,6 @@ where
 
     fn remove<Q>(&mut self, k: &Q) -> Option<V>
     where
-        // Q: ToOwned<Owned = K>,
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
@@ -201,16 +167,6 @@ where
             }
             None => None,
         }
-        // let key = Rc::new(key);
-        // if let Some(value_counter) = self.values.get(&k) { // Rc::clone(&key)) {
-        //     let count = value_counter.count;
-        //     self.frequency_bin
-        //         .entry(count)
-        //         .or_default()
-        //         .remove(&Rc::clone(&key));
-        //     self.values.remove(&key);
-        // }
-        // return false;
     }
 
     fn purge(&mut self) {
@@ -226,107 +182,10 @@ where
         self.capacity
     }
 
-    // fn iter(&self) -> impl Iterator<Item=(K, V)>;
-    // fn iter<I: Iterator<Item = (K, V)>>(&self) -> I {
-    // fn iter(&mut self) -> Self::Iter {
-    //     // self.values.iter()
-    //     LfuIterator {
-    //         values: self.values.iter(),
-    //     }
-    //     // .map(|(k, v)| (k.as_ref(), v))
-    // }
-
     fn is_empty(&self) -> bool {
         self.values.is_empty()
     }
 }
-
-// impl Cache<K, V> for LFUCache<K, V> where K: Hash + Eq {
-
-//     pub fn contains(&self, key: &K) -> bool {
-//         return self.values.contains_key(key);
-//     }
-
-//     pub fn len(&self) -> usize {
-//         self.values.len()
-//     }
-
-//     pub fn remove(&mut self, key: K) -> bool {
-//         let key = Rc::new(key);
-//         if let Some(value_counter) = self.values.get(&Rc::clone(&key)) {
-//             let count = value_counter.count;
-//             self.frequency_bin
-//                 .entry(count)
-//                 .or_default()
-//                 .remove(&Rc::clone(&key));
-//             self.values.remove(&key);
-//         }
-//         return false;
-//     }
-
-//     /// Returns the value associated with the given key (if it still exists)
-//     /// Method marked as mutable because it internally updates the frequency of the accessed key
-//     pub fn get(&mut self, key: &K) -> Option<&V> {
-//         let key = self.values.get_key_value(key).map(|(r, _)| Rc::clone(r))?;
-//         self.update_frequency_bin(Rc::clone(&key));
-//         self.values.get(&key).map(|x| &x.value)
-//     }
-
-//     pub fn get_mut(&mut self, key: &K) -> Option<&mut V> {
-//         let key = self.values.get_key_value(key).map(|(r, _)| Rc::clone(r))?;
-//         self.update_frequency_bin(Rc::clone(&key));
-//         self.values.get_mut(&key).map(|x| &mut x.value)
-//     }
-
-//     fn update_frequency_bin(&mut self, key: Rc<K>) {
-//         let value_counter = self.values.get_mut(&key).unwrap();
-//         let bin = self.frequency_bin.get_mut(&value_counter.count).unwrap();
-//         bin.remove(&key);
-//         let count = value_counter.count;
-//         value_counter.inc();
-//         if count == self.min_frequency && bin.is_empty() {
-//             self.min_frequency += 1;
-//         }
-//         self.frequency_bin.entry(count + 1).or_default().insert(key);
-//     }
-
-//     fn evict(&mut self) {
-//         let least_frequently_used_keys = self.frequency_bin.get_mut(&self.min_frequency).unwrap();
-//         let least_recently_used = least_frequently_used_keys.pop_front().unwrap();
-//         self.values.remove(&least_recently_used);
-//     }
-
-//     pub fn iter(&self) -> LfuIterator<K, V> {
-//         LfuIterator {
-//             values: self.values.iter(),
-//         }
-//     }
-
-//     pub fn set(&mut self, key: K, value: V) {
-//         let key = Rc::new(key);
-//         if let Some(value_counter) = self.values.get_mut(&key) {
-//             value_counter.value = value;
-//             self.update_frequency_bin(Rc::clone(&key));
-//             return;
-//         }
-//         if self.len() >= self.capacity {
-//             self.evict();
-//         }
-//         self.values
-//             .insert(Rc::clone(&key), ValueCounter { value, count: 1 });
-//         self.min_frequency = 1;
-//         self.frequency_bin
-//             .entry(self.min_frequency)
-//             .or_default()
-//             .insert(key);
-//     }
-// }
-
-// pub struct LfuIterator<'a, K, V> {
-//     // values: Iter<'a, Rc<K>, ValueCounter<V>>,
-//     // values: Iter<'a, K, ValueCounter<V>>,
-//     values: Iter<'a, K, ValueCounter<V>>,
-// }
 
 pub struct LfuIterator<K, V> {
     values: IntoIter<K, ValueCounter<V>>,

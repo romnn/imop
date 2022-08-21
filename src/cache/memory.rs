@@ -14,7 +14,7 @@ use tokio::io::AsyncReadExt;
 #[derive(Debug, Clone)]
 pub struct InMemoryImage {
     data: Arc<Vec<u8>>,
-    format: Option<image::ImageFormat>,
+    format: image::ImageFormat,
     content_length: usize,
 }
 
@@ -24,20 +24,20 @@ impl AsRef<[u8]> for InMemoryImage {
     }
 }
 
+#[async_trait]
 impl CachedImage for InMemoryImage {
     type Data = std::io::Cursor<InMemoryImage>;
 
-    fn format(&self) -> Option<image::ImageFormat> {
+    async fn format(&self) -> image::ImageFormat {
         self.format
     }
 
-    fn content_length(&self) -> usize {
-        self.content_length
+    async fn content_length(&self) -> Result<usize, Error> {
+        Ok(self.content_length)
     }
 
-    fn data(&self) -> Self::Data {
-        // std::io::Cursor<InMemoryImage> {
-        std::io::Cursor::new(self.clone())
+    async fn data(&self) -> Result<Self::Data, Error> {
+        Ok(std::io::Cursor::new(self.clone()))
     }
 }
 
@@ -59,20 +59,22 @@ where
 }
 
 #[async_trait]
-// , std::io::Cursor<InMemoryImage>
 impl<K> ImageCache<K, InMemoryImage> for InMemoryImageCache<K>
 where
     K: Hash + Eq + Sync + Send,
 {
     #[inline]
     async fn put<D: tokio::io::AsyncRead + std::marker::Unpin + Send>(
+    // async fn put<D: futures::io::AsyncRead + std::marker::Unpin + Send>(
         &self,
         k: K,
         mut data: D,
-        format: Option<image::ImageFormat>,
+        format: image::ImageFormat,
     ) -> Result<Option<InMemoryImage>, Error> {
         let mut buffer = Vec::new();
-        data.read_to_end(&mut buffer).await.map_err(Error::from)?;
+        data.read_to_end(&mut buffer)
+            .await
+            .map_err(Error::from)?;
         let content_length = buffer.len();
         let entry = InMemoryImage {
             data: Arc::new(buffer),

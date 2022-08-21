@@ -1,4 +1,3 @@
-use super::error::Error;
 use async_trait::async_trait;
 use caches::Cache as LRUCache;
 use lru::LruCache;
@@ -9,35 +8,27 @@ use std::ops::Deref;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::io::AsyncReadExt;
+use super::error::Error;
 
-// pub trait CachedImage<R> {
+#[async_trait]
 pub trait CachedImage {
     type Data: tokio::io::AsyncRead + tokio::io::AsyncSeek;
+    // type Data: futures::io::AsyncRead + futures::io::AsyncSeek;
 
-    fn format(&self) -> Option<image::ImageFormat>;
-    fn content_length(&self) -> usize;
-    fn data(&self) -> Self::Data;
+    async fn format(&self) -> image::ImageFormat;
+    async fn content_length(&self) -> Result<usize, Error>;
+    async fn data(&self) -> Result<Self::Data, Error>;
 }
 
 #[async_trait]
-pub trait ImageCache<K, I>
-// , R>
-// where
-//     I: CachedImage<R>,
-// R: tokio::io::AsyncRead + tokio::io::AsyncSeek,
-{
-    // type Image = CachedImage<R>
-    // async fn contains<Q>(&self, id: &Q) -> bool
-    // fn contains<Q>(&self, id: &Q) -> bool
-    // where
-    //     Q: AsRef<K> + Hash + Eq + ?Sized;
-
-    async fn get(&self, k: &K) -> Option<I>;
+pub trait ImageCache<K, V> {
+    async fn get(&self, k: &K) -> Option<V>;
 
     async fn put<D: tokio::io::AsyncRead + std::marker::Unpin + Send>(
+    // async fn put<D: futures::io::AsyncRead + std::marker::Unpin + Send>(
         &self,
         k: K,
         data: D,
-        format: Option<image::ImageFormat>,
-    ) -> Result<Option<I>, Error>;
+        format: image::ImageFormat,
+    ) -> Result<Option<V>, Error>;
 }

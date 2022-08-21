@@ -4,6 +4,7 @@ pub mod image;
 pub mod lfu;
 pub mod memory;
 
+pub use self::error::Error;
 pub use self::image::{CachedImage, ImageCache};
 pub use filesystem::FileSystemImageCache;
 pub use lfu::LFUCache;
@@ -21,50 +22,37 @@ pub enum PutResult<K, V> {
 
 pub trait Cache<K, V>
 where
-    K: std::fmt::Debug + Clone + Hash + Eq,
-    V: std::fmt::Debug,
+    K: Clone + Hash + Eq,
 {
-    // type Iter: Iterator;
-
     fn put(&mut self, k: K, v: V) -> PutResult<K, V>;
-    // where
-    //     K: Clone;
 
     fn get<'a, Q>(&'a mut self, k: &'a Q) -> Option<&'a V>
     where
-        // Q: ToOwned<Owned = K>;
         K: Borrow<Q>,
-        Q: ToOwned<Owned = K> + Eq + Hash + ?Sized + Clone + std::fmt::Debug;
-    // Q: Eq + Hash + ?Sized;
+        Q: ToOwned<Owned = K> + Eq + Hash + ?Sized + Clone;
 
     fn get_mut<'a, Q>(&'a mut self, k: &'a Q) -> Option<&'a mut V>
     where
-        // Q: ToOwned<Owned = K>;
         K: Borrow<Q>,
-        Q: ToOwned<Owned = K> + Eq + Hash + ?Sized + Clone + std::fmt::Debug;
-    // Q: Eq + Hash + ?Sized;
+        Q: ToOwned<Owned = K> + Eq + Hash + ?Sized + Clone;
 
     fn peek<'a, Q>(&self, k: &'a Q) -> Option<&'a V>
     where
-        // Q: ToOwned<Owned = K>;
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized;
 
     fn peek_mut<'a, Q>(&'a mut self, k: &'a Q) -> Option<&'a mut V>
     where
-        // Q: ToOwned<Owned = K>;
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized;
 
     fn contains<Q>(&self, k: &Q) -> bool
     where
-        // Q: ToOwned<Owned = K>;
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized;
 
     fn remove<Q>(&mut self, k: &Q) -> Option<V>
     where
-        // Q: ToOwned<Owned = K>;
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized;
 
@@ -73,11 +61,6 @@ where
     fn len(&self) -> usize;
 
     fn cap(&self) -> Option<usize>;
-
-    // fn iter(&self) -> impl Iterator<Item=(K, V)>;
-    // fn iter<'a I: Iterator<Item = (Rc<K>, &V)>>(&self) -> I;
-    // fn iter<'a, I: Iterator<Item = (K, V)>>(&self) -> I;
-    // fn iter(&self) -> Self::Iter;
 
     fn is_empty(&self) -> bool;
 }
