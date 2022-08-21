@@ -11,7 +11,7 @@ use std::rc::Rc;
 #[derive(Debug)]
 pub struct LFUCache<K, V>
 where
-    K: Hash + Eq,
+    K: Clone + Hash + Eq,
 {
     values: HashMap<K, ValueCounter<V>>,
     frequency_bin: HashMap<usize, LinkedHashSet<K>>,
@@ -40,7 +40,7 @@ impl<V> ValueCounter<V> {
 
 impl<K, V> LFUCache<K, V>
 where
-    K: Hash + Eq,
+    K: Clone + Hash + Eq,
 {
     pub fn with_capacity(capacity: usize) -> LFUCache<K, V> {
         LFUCache {
@@ -201,7 +201,7 @@ impl<K, V> Iterator for LfuIterator<K, V> {
 
 impl<K, V> IntoIterator for LFUCache<K, V>
 where
-    K: Eq + Hash,
+    K: Clone + Eq + Hash,
 {
     type Item = (K, V);
     type IntoIter = LfuIterator<K, V>;
@@ -213,7 +213,10 @@ where
     }
 }
 
-impl<K: Hash + Eq, V> Index<K> for LFUCache<K, V> {
+impl<K, V> Index<K> for LFUCache<K, V>
+where
+    K: Clone + Hash + Eq,
+{
     type Output = V;
     fn index(&self, index: K) -> &Self::Output {
         return self.values.get(&Rc::new(index)).map(|x| &x.value).unwrap();

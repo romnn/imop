@@ -11,6 +11,10 @@ In short, here is what `imop` provides:
 - warp filter for image resizing
 - warp handler for resizing any image on the internet
 
+```bash
+cargo run --example basic -- --images ./data --cache ./tmp
+```
+
 #### Usage a library
 
 You can use

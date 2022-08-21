@@ -3,13 +3,13 @@ use super::image::{CachedImage, ImageCache};
 use async_trait::async_trait;
 use caches::Cache as LRUCache;
 use lru::LruCache;
-use parking_lot::{MappedRwLockWriteGuard, RwLock, RwLockWriteGuard};
 use std::borrow::Borrow;
 use std::hash::Hash;
 use std::ops::Deref;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::io::AsyncReadExt;
+use tokio::sync::RwLock;
 
 #[derive(Debug, Clone)]
 pub struct InMemoryImage {
@@ -28,7 +28,7 @@ impl AsRef<[u8]> for InMemoryImage {
 impl CachedImage for InMemoryImage {
     type Data = std::io::Cursor<InMemoryImage>;
 
-    async fn format(&self) -> image::ImageFormat {
+    fn format(&self) -> image::ImageFormat {
         self.format
     }
 
@@ -65,14 +65,13 @@ where
 {
     #[inline]
     async fn put<D: tokio::io::AsyncRead + std::marker::Unpin + Send>(
-    // async fn put<D: futures::io::AsyncRead + std::marker::Unpin + Send>(
         &self,
         k: K,
         mut data: D,
         format: image::ImageFormat,
     ) -> Result<Option<InMemoryImage>, Error> {
         let mut buffer = Vec::new();
-        data.read_to_end(&mut buffer)
+        tokio::io::copy(&mut data, &mut buffer)
             .await
             .map_err(Error::from)?;
         let content_length = buffer.len();
@@ -81,14 +80,14 @@ where
             format,
             content_length,
         };
-        let mut lock = self.inner.write();
+        let mut lock = self.inner.write().await;
         lock.put(k, entry);
         Ok(None)
     }
 
     #[inline]
     async fn get(&self, k: &K) -> Option<InMemoryImage> {
-        let mut lock = self.inner.write();
+        let mut lock = self.inner.write().await;
         lock.get(k).map(|v| v.clone())
     }
 }

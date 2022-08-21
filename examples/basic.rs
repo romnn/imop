@@ -39,29 +39,27 @@ struct Options {
     port: u16,
 }
 
-#[derive(Eq, PartialEq, Hash)]
+#[derive(Clone, Eq, PartialEq, Hash)]
 enum CacheKey {
-    // Source(&'a FileOrigin),
-    // Optimized {
-    //     origin: &'a FileOrigin,
-    //     optimizations: &'a Optimizations,
-    // },
     Source(FileOrigin),
     Optimized {
         origin: FileOrigin,
         optimizations: Optimizations,
     },
-    // origin: FileOrigin,
-    // optimizations: Optimizations,
 }
 
+// async fn serve_static_file<C, V>(
 async fn serve_static_file(
     path: ArcPath,
     conditionals: Conditionals,
     optimizations: Optimizations,
-    cache: Arc<InMemoryImageCache<CacheKey>>,
-    // ) -> Result<File, Rejection> {
-) -> Result<File, Rejection> {
+    cache: Arc<FileSystemImageCache<CacheKey>>,
+    // cache: Arc<C>,
+) -> Result<File, Rejection>
+// where
+//     C: ImageCache<CacheKey, V>,
+//     V: CachedImage,
+{
     imop::debug!("{:?}", &path);
     imop::debug!("{:?}", &optimizations);
 
@@ -71,34 +69,15 @@ async fn serve_static_file(
     match mime.type_() {
         mime::IMAGE => {
             let mut img = Image::open(&path).map_err(Error::from)?;
-            // let mut encoded = std::io::Cursor::new(Vec::new());
             let target_format = optimizations
                 .format
                 .or(img.format())
                 .unwrap_or(ImageFormat::Jpeg);
 
             img.resize(&optimizations.bounds());
-            // img.encode(&mut encoded, target_format, optimizations.quality)
-            //     .map_err(Error::from)?;
             let encoded = img
                 .encode(target_format, optimizations.quality)
                 .map_err(Error::from)?;
-            // Ok(encoded)
-
-            // let len = encoded.position() as u64;
-            // encoded.set_position(0);
-            // let stream = file_stream(encoded, (0, len), None);
-            // let body = warp::hyper::Body::wrap_stream(stream);
-            // let mut resp = warp::reply::Response::new(body);
-
-            // resp.headers_mut()
-            //     .typed_insert(imop::headers::ContentLength(len as u64));
-            // resp.headers_mut()
-            //     .typed_insert(imop::headers::ContentType::from(
-            //         mime_of_format(target_format).unwrap_or(mime::IMAGE_STAR),
-            //     ));
-            // resp.headers_mut()
-            //     .typed_insert(imop::headers::AcceptRanges::bytes());
 
             Ok(File {
                 resp: encoded.into_response(),
@@ -123,11 +102,17 @@ pub enum Error {
 
 impl warp::reject::Reject for Error {}
 
+// async fn fetch_and_serve_file<C, V>(
 async fn fetch_and_serve_file(
     optimizations: Optimizations,
     external_image: ExternalImage,
-    cache: Arc<InMemoryImageCache<CacheKey>>,
-) -> Result<File, Rejection> {
+    cache: Arc<FileSystemImageCache<CacheKey>>,
+    // cache: Arc<C>,
+) -> Result<File, Rejection>
+// where
+//     C: ImageCache<CacheKey, V>,
+//     V: CachedImage,
+{
     imop::debug!("image = {:?}", &external_image);
     imop::debug!("optimizations = {:?}", &optimizations);
 
@@ -145,41 +130,15 @@ async fn fetch_and_serve_file(
             // fast path: check if optimized image is cached
             if let Some(cached) = cache.get(&key).await {
                 match async {
-                    // let target_format = optimizations
-                    //     .format
-                    //     .or(cached.format().await)
-                    //     .unwrap_or(ImageFormat::Jpeg);
-
                     let len = cached.content_length().await? as u64;
                     let mut buffer = Vec::new();
                     let mut reader = tokio::io::BufReader::new(cached.data().await?);
                     tokio::io::copy(&mut reader, &mut buffer).await;
-                    // .read_buf(&mut buffer).await?;
-                    // .read_to_end(&mut buffer).await?; // .map_err(Error::from)?;
-
-                    // let mut reader =
-                    //     futures::io::BufReader::new(cached.data().await?);
-                    // reader //
-                    //     .read_to_end(&mut buffer)
-                    //     .await?; // .map_err(Error::from)?;
 
                     let encoded = EncodedImage {
                         buffer,
-                        format: cached.format().await,
+                        format: cached.format(),
                     };
-
-                    // let stream = file_stream(cached.data().await?, (0, len), None);
-                    // let body = warp::hyper::Body::wrap_stream(stream);
-                    // let mut resp = warp::reply::Response::new(body);
-
-                    // resp.headers_mut()
-                    //     .typed_insert(imop::headers::ContentLength(len));
-                    // resp.headers_mut()
-                    //     .typed_insert(imop::headers::ContentType::from(
-                    //         mime_of_format(target_format).unwrap_or(mime::IMAGE_STAR),
-                    //     ));
-                    // resp.headers_mut()
-                    //     .typed_insert(imop::headers::AcceptRanges::bytes());
 
                     Ok::<File, CacheError>(File {
                         resp: encoded.into_response(),
@@ -194,55 +153,35 @@ async fn fetch_and_serve_file(
                     }
                     Err(err) => {
                         eprintln!("fail fast cache error: {:?}", err);
-                        // Err(err)
                     }
                 }
             };
 
-            // let mut img = cache
-            //     .get(&source_key)
-            //     .await
-            //     .ok()
-            //     .and_then(|cached| cached.data().await.ok())
-            //     .and_then(|data| Image::new(data).ok());
-            // });
             let mut img = async {
                 let cached = cache.get(&source_key).await.ok_or(CacheError::NotFound)?;
-                let data = cached.data().await?;
-                let img = Image::new(data).map_err(CacheError::from)?;
-                // |err| match err {
-                //     Error::Image
-                //     CacheError::Invalid(err.0))?;
+                let mut buffer = Vec::new();
+                let mut data = cached.data().await?;
+                tokio::io::copy(&mut data, &mut buffer)
+                    .await
+                    .map_err(CacheError::from)?;
+                let reader = std::io::BufReader::new(std::io::Cursor::new(buffer));
+                let img = Image::new(reader).map_err(CacheError::from)?;
                 Ok::<Image, CacheError>(img)
-                // .and_then(|cached| .ok())
-                // .and_then(|data| .ok());
             }
             .await
             .map_err(Error::from);
 
-            // let mut img = Image::new(cached); // cached.data().await?)
-
             if img.is_err() {
-                // download
                 imop::debug!("source cache miss");
                 let res = reqwest::get(url.clone()).await.map_err(Error::from)?;
                 // let data = res.bytes().await.map_err(Error::from)?;
                 let mut buffer = Vec::new();
-                // let mut buffer = bytes::BytesMut::new();
                 let mut reader = tokio::io::BufReader::new(
                     res.bytes_stream()
                         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
                         .into_async_read()
                         .compat(),
                 );
-                // reader
-                //     // .compat()
-                //     .read_buf(&mut buffer)
-                //     // .read_to_end(&mut data)
-                //     .await
-                //     .map_err(ImageError::from)
-                //     .map_err(Error::from)?;
-                // let mut reader = tokio::io::BufReader::new(cached.data().await?);
                 tokio::io::copy(&mut reader, &mut buffer).await;
 
                 imop::debug!("download of {} took {:?}", &url, now.elapsed());
@@ -255,45 +194,28 @@ async fn fetch_and_serve_file(
                             std::io::Cursor::new(&buffer),
                             img.format().unwrap_or(ImageFormat::Jpeg),
                         )
-                        .await;
+                        .await
+                        .map_err(Error::from)?;
                 }
             }
 
             let mut img = img?;
-            // let mut encoded = std::io::Cursor::new(Vec::new());
             let target_format = optimizations
                 .format
                 .or(img.format())
                 .unwrap_or(ImageFormat::Jpeg);
 
             img.resize(&optimizations.bounds());
-            // &mut encoded,
             let encoded = img
                 .encode(target_format, optimizations.quality)
                 .map_err(Error::from)?;
 
-            // let len = encoded.position() as u64;
-            // encoded.set_position(0);
-            // let stream = file_stream(encoded.clone(), (0, len), None);
-            // let body = warp::hyper::Body::wrap_stream(stream);
-            // let mut resp = warp::reply::Response::new(body);
-
-            // resp.headers_mut()
-            //     .typed_insert(imop::headers::ContentLength(len as u64));
-            // resp.headers_mut()
-            //     .typed_insert(imop::headers::ContentType::from(
-            //         mime_of_format(target_format).unwrap_or(mime::IMAGE_STAR),
-            //     ));
-            // resp.headers_mut()
-            //     .typed_insert(imop::headers::AcceptRanges::bytes());
-
             // add source image to cache
-            // encoded.set_position(0);
-            let key = cache
+            cache
                 .put(key, std::io::Cursor::new(&encoded.buffer), target_format)
-                .await;
+                .await
+                .map_err(Error::from)?;
 
-            // Ok(encoded)
             Ok(File {
                 resp: encoded.into_response(),
                 origin: FileOrigin::Url(url),
@@ -307,16 +229,10 @@ async fn fetch_and_serve_file(
 async fn main() -> Result<()> {
     let options: Options = Options::parse();
     let base = Arc::new(options.image_path);
-    // let cache: Arc<InMemoryCache<CacheKey, Vec<u8>>> = Arc::new(InMemoryCache::new(Some(10)));
-    // let cache: Arc<InMemoryCache<CacheKey, futures::io::Cursor<Vec<u8>>>> =
 
-    // those all implement asyncread which is good
-    // but we should not specify file and cursor
-    // we should never clone cursors as then we copy
-    // also we should not reuse the same cursor because that would be unsafe
-    let cache = Arc::new(InMemoryImageCache::<CacheKey>::new(Some(10)));
+    let cache1 = Arc::new(InMemoryImageCache::<CacheKey>::new(Some(10)));
     let cache2 = Arc::new(InMemoryImageCache::<CacheKey>::new(Some(10)));
-    let cache3 = Arc::new(FileSystemImageCache::<CacheKey>::new(
+    let cache = Arc::new(FileSystemImageCache::<CacheKey>::new(
         options.cache_dir_path,
         10,
     ));
