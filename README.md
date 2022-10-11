@@ -6,10 +6,13 @@ Implemented in rust and based on `tokio`, `warp` and it's static file handling i
 
 In short, here is what `imop` provides:
 
-- stand alone static file server with support for resizing images, and async file compression
-- warp filter for async compression based on the content type
-- warp filter for image resizing
-- warp handler for resizing any image on the internet
+- stand alone static file server
+- support for resizing images
+- support for async file compression
+- flexible usage and highly extendable as a library
+  - warp filter for async compression based on content type
+  - warp filter for image resizing
+  - warp handler for resizing any image downloaded over http
 
 #### Usage a library
 
