@@ -3,7 +3,6 @@ use super::headers::{
     AcceptRanges, ContentLength, ContentRange, ContentType, HeaderMapExt, LastModified, Range,
 };
 use super::FilterClone;
-use anyhow::Result;
 use bytes::{Bytes, BytesMut};
 use futures_util::future::Either;
 use futures_util::{future, ready, stream, FutureExt, Stream, StreamExt, TryFutureExt};

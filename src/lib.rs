@@ -8,6 +8,7 @@ pub mod conditionals;
 mod content_type_filter;
 mod debug;
 pub mod file;
+pub mod bounds;
 pub mod headers;
 pub mod image;
 

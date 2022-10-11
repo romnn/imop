@@ -4,7 +4,6 @@ use super::headers::{
     AcceptRanges, ContentEncoding, ContentLength, ContentRange, ContentType, Header, HeaderMap,
     HeaderMapExt, HeaderValue, IfModifiedSince, IfRange, IfUnmodifiedSince, LastModified, Range,
 };
-use anyhow::Result;
 use bytes::{Bytes, BytesMut};
 use clap::Parser;
 use futures_util::future::Either;

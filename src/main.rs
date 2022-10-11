@@ -1,6 +1,5 @@
 #![allow(warnings)]
 
-use anyhow::Result;
 use clap::Parser;
 use http_headers::ContentType;
 use imop::compression;

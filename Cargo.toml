@@ -1,19 +1,14 @@
-
 [package]
 name = "imop"
-version = "0.1.0"
+version = "0.0.1"
 authors = ["romnn <contact@romnn.com>"]
 edition = "2021"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
 
-[[bin]]
-name = "imop"
-path = "src/cli.rs"
-
 [dependencies]
-image = "0.24"
+image = "0"
 clap = { version = "3", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
@@ -21,8 +16,8 @@ tokio-util = { version = "0.7", features = ["io", "compat"] }
 # warp = { version = "0.3", features = ["multipart", "compression"] }
 warp = { version = "0.3", features = ["multipart"] }
 async-compression = { version = "0.3", features = ["tokio", "brotli", "deflate", "gzip"], optional = true }
-anyhow = "1"
-async-trait = "0.1"
+# anyhow = "1"
+async-trait = "0"
 serde_json = "1"
 lazy_static = "1"
 futures-util = "0.3"

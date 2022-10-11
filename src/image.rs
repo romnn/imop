@@ -1,3 +1,4 @@
+use super::bounds::{Bounds, ScalingMode, Size};
 use super::headers::HeaderMapExt;
 pub use image::ImageFormat;
 use image::{
@@ -7,29 +8,53 @@ use image::{
 use mime_guess::mime;
 use serde::Deserialize;
 use std::borrow::Cow;
-use std::fs::File;
 use std::io::{self, BufRead, BufReader, Cursor, Read, Seek, SeekFrom};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-#[derive(Deserialize, Eq, PartialEq, Hash, Debug, Clone, Copy)]
-pub enum ScalingMode {
-    /// Fit into wxh if both are given.
-    /// Only keeps aspect ratio if at most a single dimension is given
-    Exact,
-    /// Fit into wxh if both are given while keeping aspect ratio
-    /// If at most one dimension is given, falls back to ``ScalingMode::exact``
-    Fit,
+const DEFAULT_JPEG_QUALITY: u8 = 70; // 1-100
+
+#[derive(thiserror::Error, Debug)]
+pub enum Error {
+    #[error("image error: `{0}`")]
+    Image(#[from] image::error::ImageError),
+
+    #[error("io error: `{0}`")]
+    Io(#[from] std::io::Error),
 }
 
-#[derive(Deserialize, Debug, Clone, Copy)]
-pub struct Bounds {
+#[derive(Deserialize, Eq, PartialEq, Hash, Debug, Clone, Copy)]
+pub struct Optimizations {
+    /// quality value for JPEG (0 to 100)
+    pub quality: Option<u8>,
     /// width of the image
     pub width: Option<u32>,
     /// height of the image
     pub height: Option<u32>,
     /// mode of scaling
     pub mode: Option<ScalingMode>,
+    /// encoding format
+    #[serde(default)]
+    #[serde(deserialize_with = "image_format_from_ext")]
+    pub format: Option<ImageFormat>,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct ExternalImage {
+    #[serde(default)]
+    #[serde(deserialize_with = "url_from_string")]
+    /// URL to the external image
+    pub image: Option<reqwest::Url>,
+}
+
+impl Optimizations {
+    pub fn bounds(&self) -> Bounds {
+        Bounds {
+            width: self.width,
+            height: self.height,
+            mode: self.mode,
+        }
+    }
 }
 
 pub fn mime_of_format(format: ImageFormat) -> Option<mime::Mime> {
@@ -87,81 +112,50 @@ where
     }
 }
 
-#[derive(Deserialize, Eq, PartialEq, Hash, Debug, Clone, Copy)]
-pub struct Optimizations {
-    /// quality value for JPEG (0 to 100)
-    pub quality: Option<u8>,
-    /// width of the image
-    pub width: Option<u32>,
-    /// height of the image
-    pub height: Option<u32>,
-    /// mode of scaling
-    pub mode: Option<ScalingMode>,
-    /// encoding format
-    #[serde(default)]
-    #[serde(deserialize_with = "image_format_from_ext")]
-    pub format: Option<ImageFormat>,
-}
+// #[inline]
+// pub fn clamp<T: PartialOrd>(input: T, min: T, max: T) -> T {
+//     debug_assert!(min <= max, "min must be less than or equal to max");
+//     if input < min {
+//         min
+//     } else if input > max {
+//         max
+//     } else {
+//         input
+//     }
+// }
 
-#[derive(Deserialize, Debug, Clone)]
-pub struct ExternalImage {
-    /// URL to the external image
-    #[serde(default)]
-    #[serde(deserialize_with = "url_from_string")]
-    pub image: Option<reqwest::Url>,
-}
-
-impl Optimizations {
-    pub fn bounds(&self) -> Bounds {
-        Bounds {
-            width: self.width,
-            height: self.height,
-            mode: self.mode,
-        }
-    }
-}
-
-#[derive(thiserror::Error, Debug)]
-pub enum Error {
-    #[error("image error: `{0}`")]
-    Image(#[from] image::error::ImageError),
-
-    #[error("io error: `{0}`")]
-    Io(#[from] std::io::Error),
-}
-
-#[inline]
-pub fn clamp<T: PartialOrd>(input: T, min: T, max: T) -> T {
-    debug_assert!(min <= max, "min must be less than or equal to max");
-    if input < min {
-        min
-    } else if input > max {
-        max
-    } else {
-        input
-    }
-}
-
-#[inline]
-pub fn fit_to_bounds(width: u32, height: u32, bounds: &Bounds) -> Option<(u32, u32)> {
-    // clamp bounds, as we dont allow enlargement
-    let bwidth = bounds.width.map(|w| clamp(w, 1, width));
-    let bheight = bounds.height.map(|h| clamp(h, 1, height));
-    match (bwidth, bheight) {
-        (None, None) => None,
-        (Some(w), None) => Some((w, height)),
-        (None, Some(h)) => Some((width, h)),
-        (Some(w), Some(h)) => Some((w, h)),
-    }
-}
-
-const DEFAULT_JPEG_QUALITY: u8 = 70; // 1-100
+// #[inline]
+// pub fn fit_to_bounds(width: u32, height: u32, bounds: &Bounds) -> Option<(u32, u32)> {
+//     // clamp bounds, as we dont allow enlargement
+//     let bwidth = bounds.width.map(|w| clamp(w, 1, width));
+//     let bheight = bounds.height.map(|h| clamp(h, 1, height));
+//     match (bwidth, bheight) {
+//         (None, None) => None,
+//         (Some(w), None) => Some((w, height)),
+//         (None, Some(h)) => Some((width, h)),
+//         (Some(w), Some(h)) => Some((w, h)),
+//     }
+// }
 
 #[derive(Debug)]
 pub struct Image {
     inner: DynamicImage,
     format: Option<ImageFormat>,
-    size: (u32, u32),
+    size: Size,
+}
+
+impl std::ops::Deref for Image {
+    type Target = DynamicImage;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl std::ops::DerefMut for Image {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.inner
+    }
 }
 
 #[derive(Debug)]
@@ -224,7 +218,10 @@ impl Image {
         let reader = ImageReader::new(reader).with_guessed_format()?;
         let format = reader.format();
         let inner = reader.decode()?;
-        let size = (inner.width(), inner.height());
+        let size = Size {
+            width: inner.width(),
+            height: inner.height(),
+        };
         crate::debug!("image decode took {:?}", now.elapsed());
         Ok(Self {
             inner,
@@ -248,18 +245,27 @@ impl Image {
     // }
 
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
+        use std::fs::File;
         Self::new(BufReader::new(File::open(path)?))
     }
 
-    pub fn resize(&mut self, bounds: &Bounds) {
+    pub fn resize(&mut self, bounds: Bounds) {
         let now = Instant::now();
-        let (w, h) = self.size;
-        if let Some((w, h)) = fit_to_bounds(w, h, bounds) {
-            self.inner = self
-                .inner
-                .resize_exact(w, h, imageops::FilterType::Lanczos3);
-            crate::debug!("fitting to {} x {} took {:?}", w, h, now.elapsed());
-        };
+        let new_size = self.size.fit_to_bounds(bounds).unwrap();
+        self.inner = self.inner.resize_exact(
+            new_size.width,
+            new_size.height,
+            imageops::FilterType::Lanczos3,
+        );
+        crate::debug!("fitting to {} took {:?}", new_size, now.elapsed());
+
+        // let (w, h) = self.size;
+        // if let Some((w, h)) = fit_to_bounds(w, h, bounds) {
+        //     self.inner = self
+        //         .inner
+        //         .resize_exact(w, h, imageops::FilterType::Lanczos3);
+        //     crate::debug!("fitting to {} x {} took {:?}", w, h, now.elapsed());
+        // };
     }
 
     pub fn format(&self) -> Option<ImageFormat> {
