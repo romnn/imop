@@ -7,7 +7,6 @@ use anyhow::Result;
 use bytes::{Bytes, BytesMut};
 use futures_util::future::Either;
 use futures_util::{future, ready, stream, FutureExt, Stream, StreamExt, TryFutureExt};
-// use futures_util::io::AsyncSeek;
 use std::cmp;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -24,7 +23,7 @@ use warp::Future;
 use warp::Rejection;
 use warp::{Filter, Reply};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct ArcPath(Arc<PathBuf>);
 
 impl AsRef<Path> for ArcPath {
@@ -33,15 +32,31 @@ impl AsRef<Path> for ArcPath {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub enum FileOrigin {
+    Url(reqwest::Url),
+    Path(ArcPath),
+}
+
 #[derive(Debug)]
 pub struct File {
     pub resp: Response,
-    pub path: ArcPath,
+    pub origin: FileOrigin,
 }
 
 impl File {
-    pub fn path(&self) -> &Path {
-        self.path.as_ref()
+    pub fn url(&self) -> Option<&reqwest::Url> {
+        match &self.origin {
+            FileOrigin::Url(url) => Some(&url),
+            _ => None,
+        }
+    }
+
+    pub fn path(&self) -> Option<&Path> {
+        match &self.origin {
+            FileOrigin::Path(path) => Some(path.as_ref()),
+            _ => None,
+        }
     }
 }
 
@@ -214,6 +229,7 @@ pub fn path_from_tail(
             if is_dir {
                 buf.push("index.html");
             }
+            // Ok(ArcPath(Arc::new(buf)))
             Ok(ArcPath(Arc::new(buf)))
         })
     })
@@ -281,7 +297,10 @@ fn file_conditional(
             }
         };
 
-        File { resp, path }
+        File {
+            resp,
+            origin: FileOrigin::Path(path),
+        }
     })
 }
 

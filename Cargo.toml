@@ -17,16 +17,23 @@ image = "0.24"
 clap = { version = "3", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
-tokio-util = { version = "0.7", features = ["io"] }
+tokio-util = { version = "0.7", features = ["io", "compat"] }
 # warp = { version = "0.3", features = ["multipart", "compression"] }
 warp = { version = "0.3", features = ["multipart"] }
 async-compression = { version = "0.3", features = ["tokio", "brotli", "deflate", "gzip"], optional = true }
 anyhow = "1"
+async-trait = "0.1"
 serde_json = "1"
 lazy_static = "1"
 futures-util = "0.3"
+parking_lot = "0.12"
+caches = "0.2"
+linked_hash_set = "0.1"
+digest = "0.10"
+base64 = "0.13"
 futures = "0.3"
 urlencoding = "2"
+reqwest = { version = "0.11", features = [ "stream" ] }
 http = "0.2"
 http-headers = { version = "0.3", package = "headers" }
 mime_guess = "2"
