@@ -1,16 +1,11 @@
 use super::bounds::{Bounds, ScalingMode, Size};
-use super::headers::HeaderMapExt;
-pub use image::ImageFormat;
-use image::{
-    codecs, imageops, io::Reader as ImageReader, DynamicImage, ImageEncoder, ImageOutputFormat,
-    RgbaImage,
-};
-use mime_guess::mime;
+use super::mime::{self, Mime};
+pub use image::ImageFormat as Format;
 use serde::Deserialize;
 use std::borrow::Cow;
-use std::io::{self, BufRead, BufReader, Cursor, Read, Seek, SeekFrom};
+use std::io::Seek;
 use std::path::Path;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 const DEFAULT_JPEG_QUALITY: u8 = 70; // 1-100
 
@@ -36,11 +31,11 @@ pub struct Optimizations {
     /// encoding format
     #[serde(default)]
     #[serde(deserialize_with = "image_format_from_ext")]
-    pub format: Option<ImageFormat>,
+    pub format: Option<Format>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
-pub struct ExternalImage {
+pub struct External {
     #[serde(default)]
     #[serde(deserialize_with = "url_from_string")]
     /// URL to the external image
@@ -48,6 +43,8 @@ pub struct ExternalImage {
 }
 
 impl Optimizations {
+    #[must_use]
+    #[inline]
     pub fn bounds(&self) -> Bounds {
         Bounds {
             width: self.width,
@@ -57,48 +54,53 @@ impl Optimizations {
     }
 }
 
-pub fn mime_of_format(format: ImageFormat) -> Option<mime::Mime> {
+#[must_use]
+#[inline]
+pub fn mime_of_format(format: Format) -> Option<Mime> {
     match format {
-        ImageFormat::Png => Some(mime::IMAGE_PNG),
-        ImageFormat::Jpeg => Some(mime::IMAGE_JPEG),
-        ImageFormat::Gif => Some(mime::IMAGE_GIF),
-        ImageFormat::WebP => "image/webp".parse().ok(),
-        ImageFormat::Pnm => "image/x-portable-bitmap".parse().ok(),
-        ImageFormat::Tiff => "image/tiff".parse().ok(),
-        ImageFormat::Tga => "image/x-tga".parse().ok(),
-        ImageFormat::Dds => "image/vnd-ms.dds".parse().ok(),
-        ImageFormat::Bmp => Some(mime::IMAGE_BMP),
-        ImageFormat::Ico => "image/x-icon".parse().ok(),
-        ImageFormat::Hdr => "image/vnd.radiance".parse().ok(),
-        ImageFormat::OpenExr => None,
-        ImageFormat::Farbfeld => None,
-        ImageFormat::Avif => "image/avif".parse().ok(),
+        Format::Png => Some(mime::IMAGE_PNG),
+        Format::Jpeg => Some(mime::IMAGE_JPEG),
+        Format::Gif => Some(mime::IMAGE_GIF),
+        Format::WebP => "image/webp".parse().ok(),
+        Format::Pnm => "image/x-portable-bitmap".parse().ok(),
+        Format::Tiff => "image/tiff".parse().ok(),
+        Format::Tga => "image/x-tga".parse().ok(),
+        Format::Dds => "image/vnd-ms.dds".parse().ok(),
+        Format::Bmp => Some(mime::IMAGE_BMP),
+        Format::Ico => "image/x-icon".parse().ok(),
+        Format::Hdr => "image/vnd.radiance".parse().ok(),
+        Format::Avif => "image/avif".parse().ok(),
         _ => None,
     }
 }
 
-fn image_format_from_ext<'de, D>(deserializer: D) -> Result<Option<ImageFormat>, D::Error>
+#[inline]
+fn image_format_from_ext<'de, D>(deserializer: D) -> Result<Option<Format>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
+    use image::error;
     let s: Option<Cow<'de, str>> = Option::deserialize(deserializer)?;
     match s {
         None => Ok(None),
         Some(s) => {
-            let fmt = ImageFormat::from_extension(s.as_ref())
-                .ok_or(image::error::UnsupportedError::from_format_and_kind(
-                    image::error::ImageFormatHint::Unknown,
-                    image::error::UnsupportedErrorKind::Format(
-                        image::error::ImageFormatHint::Name(s.to_string()),
-                    ),
-                ))
-                .map_err(image::error::ImageError::Unsupported)
+            let fmt = Format::from_extension(s.as_ref())
+                .ok_or_else(|| {
+                    error::UnsupportedError::from_format_and_kind(
+                        error::ImageFormatHint::Unknown,
+                        error::UnsupportedErrorKind::Format(error::ImageFormatHint::Name(
+                            s.to_string(),
+                        )),
+                    )
+                })
+                .map_err(error::ImageError::Unsupported)
                 .map_err(serde::de::Error::custom)?;
             Ok(Some(fmt))
         }
     }
 }
 
+#[inline]
 fn url_from_string<'de, D>(deserializer: D) -> Result<Option<reqwest::Url>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -112,77 +114,57 @@ where
     }
 }
 
-// #[inline]
-// pub fn clamp<T: PartialOrd>(input: T, min: T, max: T) -> T {
-//     debug_assert!(min <= max, "min must be less than or equal to max");
-//     if input < min {
-//         min
-//     } else if input > max {
-//         max
-//     } else {
-//         input
-//     }
-// }
-
-// #[inline]
-// pub fn fit_to_bounds(width: u32, height: u32, bounds: &Bounds) -> Option<(u32, u32)> {
-//     // clamp bounds, as we dont allow enlargement
-//     let bwidth = bounds.width.map(|w| clamp(w, 1, width));
-//     let bheight = bounds.height.map(|h| clamp(h, 1, height));
-//     match (bwidth, bheight) {
-//         (None, None) => None,
-//         (Some(w), None) => Some((w, height)),
-//         (None, Some(h)) => Some((width, h)),
-//         (Some(w), Some(h)) => Some((w, h)),
-//     }
-// }
-
 #[derive(Debug)]
 pub struct Image {
-    inner: DynamicImage,
-    format: Option<ImageFormat>,
+    inner: image::DynamicImage,
+    format: Option<Format>,
     size: Size,
 }
 
 impl std::ops::Deref for Image {
-    type Target = DynamicImage;
+    type Target = image::DynamicImage;
 
+    #[inline]
     fn deref(&self) -> &Self::Target {
         &self.inner
     }
 }
 
 impl std::ops::DerefMut for Image {
+    #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.inner
     }
 }
 
-#[derive(Debug)]
-pub struct EncodedImage {
-    pub buffer: Vec<u8>,
-    pub format: image::ImageFormat,
-}
+// #[derive(Debug)]
+// pub struct EncodedImage {
+//     pub buffer: Vec<u8>,
+//     pub format: image::ImageFormat,
+// }
 
-impl warp::Reply for EncodedImage {
-    fn into_response(self) -> warp::reply::Response {
-        let len = self.buffer.len() as u64;
-        let buffer = std::io::Cursor::new(self.buffer);
-        let stream = super::file::file_stream(buffer, (0, len), None);
-        let body = warp::hyper::Body::wrap_stream(stream);
-        let mut resp = warp::reply::Response::new(body);
+// impl warp::Reply for EncodedImage {
+//     #[inline]
+//     fn into_response(self) -> warp::reply::Response {
+//
+// use super::headers::HeaderMapExt;
+//         let len = self.buffer.len() as u64;
+//         let buffer = std::io::Cursor::new(self.buffer);
+//         let stream = super::file::file_stream(buffer, (0, len), None);
+//         let body = warp::hyper::Body::wrap_stream(stream);
+//         let mut resp = warp::reply::Response::new(body);
 
-        resp.headers_mut()
-            .typed_insert(super::headers::ContentLength(len));
-        resp.headers_mut()
-            .typed_insert(super::headers::ContentType::from(
-                mime_of_format(self.format).unwrap_or(mime::IMAGE_STAR),
-            ));
-        resp.headers_mut()
-            .typed_insert(super::headers::AcceptRanges::bytes());
-        resp
-    }
-}
+//         resp.headers_mut()
+//             .typed_insert(super::headers::ContentLength(len));
+//         resp.headers_mut()
+//             .typed_insert(super::headers::ContentType::from(
+//                 mime_of_format(self.format).unwrap_or(mime::IMAGE_STAR),
+//             ));
+//         resp.headers_mut()
+//             .typed_insert(super::headers::AcceptRanges::bytes());
+//         resp
+//     }
+// }
 
 // impl From<EncodedImage> for super::file::File {
 //     fn from(image: EncodedImage) -> Self {
@@ -213,7 +195,9 @@ impl warp::Reply for EncodedImage {
 // }
 
 impl Image {
+    #[inline]
     pub fn new<R: std::io::BufRead + std::io::Seek>(reader: R) -> Result<Self, Error> {
+        use image::io::Reader as ImageReader;
         let now = Instant::now();
         let reader = ImageReader::new(reader).with_guessed_format()?;
         let format = reader.format();
@@ -244,18 +228,21 @@ impl Image {
     //     //     .typed_insert(imop::headers::AcceptRanges::bytes());
     // }
 
+    #[inline]
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
         use std::fs::File;
+        use std::io::BufReader;
         Self::new(BufReader::new(File::open(path)?))
     }
 
+    #[inline]
     pub fn resize(&mut self, bounds: Bounds) {
         let now = Instant::now();
         let new_size = self.size.fit_to_bounds(bounds).unwrap();
         self.inner = self.inner.resize_exact(
             new_size.width,
             new_size.height,
-            imageops::FilterType::Lanczos3,
+            image::imageops::FilterType::Lanczos3,
         );
         crate::debug!("fitting to {} took {:?}", new_size, now.elapsed());
 
@@ -268,16 +255,20 @@ impl Image {
         // };
     }
 
-    pub fn format(&self) -> Option<ImageFormat> {
+    #[inline]
+    #[must_use]
+    pub fn format(&self) -> Option<Format> {
         self.format
     }
 
+    #[inline]
     pub fn encode_to<W: std::io::Write + Seek>(
         &self,
         w: &mut W,
-        format: ImageFormat,
+        format: Format,
         quality: Option<u8>,
     ) -> Result<(), Error> {
+        use image::{codecs, ImageEncoder, ImageOutputFormat};
         let now = Instant::now();
         let data = self.inner.as_bytes();
         let color = self.inner.color();
@@ -328,12 +319,13 @@ impl Image {
         Ok(())
     }
 
-    pub fn encode(&self, format: ImageFormat, quality: Option<u8>) -> Result<EncodedImage, Error> {
-        let mut buffer = std::io::Cursor::new(Vec::new());
-        self.encode_to(&mut buffer, format, quality)?;
-        Ok(EncodedImage {
-            buffer: buffer.into_inner(),
-            format,
-        })
-    }
+    // #[inline]
+    // pub fn encode(&self, format: ImageFormat, quality: Option<u8>) -> Result<EncodedImage, Error> {
+    //     let mut buffer = std::io::Cursor::new(Vec::new());
+    //     self.encode_to(&mut buffer, format, quality)?;
+    //     Ok(EncodedImage {
+    //         buffer: buffer.into_inner(),
+    //         format,
+    //     })
+    // }
 }

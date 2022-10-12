@@ -1,11 +1,3 @@
-use http_headers::HeaderValue;
-
-// #[derive(thiserror::Error, Debug, PartialEq)]
-// pub enum Error {
-//     #[error("invalid content coding: `{0}`")]
-//     Invalid(String),
-// }
-
 // Derives an enum to represent content codings and some helpful impls
 macro_rules! define_content_coding {
     ($($coding:ident; $str:expr,)+) => {
@@ -33,6 +25,7 @@ macro_rules! define_content_coding {
             /// assert_eq!(coding.to_static(), "br");
             /// ```
             #[inline]
+            #[must_use]
             pub fn to_static(&self) -> &'static str {
                 match *self {
                     $(ContentCoding::$coding => $str,)+
@@ -57,6 +50,7 @@ macro_rules! define_content_coding {
             /// assert_eq!(valid, ContentCoding::GZIP);
             /// ```
             #[inline]
+            #[must_use]
             pub fn from_name(s: &str) -> Self {
                 ContentCoding::try_from_name(s).unwrap_or(ContentCoding::IDENTITY)
             }
@@ -85,7 +79,6 @@ macro_rules! define_content_coding {
                         | $str => Ok(ContentCoding::$coding),
                     )+
                     _ => Err(http_headers::Error::invalid())
-                    // _ => Err(Error::Invalid(s.to_owned()))
                 }
             }
         }
@@ -99,10 +92,10 @@ macro_rules! define_content_coding {
             }
         }
 
-        impl From<ContentCoding> for HeaderValue {
-            fn from(coding: ContentCoding) -> HeaderValue {
+        impl From<ContentCoding> for http_headers::HeaderValue {
+            fn from(coding: ContentCoding) -> http_headers::HeaderValue {
                 match coding {
-                    $(ContentCoding::$coding => HeaderValue::from_static($str),)+
+                    $(ContentCoding::$coding => http_headers::HeaderValue::from_static($str),)+
                 }
             }
         }
@@ -121,7 +114,6 @@ define_content_coding! {
 #[cfg(test)]
 mod tests {
     use super::ContentCoding;
-    use crate::headers::Error;
 
     #[test]
     fn to_static() {
@@ -150,10 +142,5 @@ mod tests {
             ContentCoding::BROTLI
         );
         assert!(ContentCoding::try_from_name("blah blah").is_err());
-        // assert_eq!(
-        //     ContentCoding::try_from_name(&invalid),
-        //     // Err(Error::Invalid(invalid.to_owned()))
-        //     Err(http_headers::Error::invalid())
-        // );
     }
 }

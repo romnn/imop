@@ -1,35 +1,20 @@
 #![allow(warnings)]
 
 use clap::Parser;
-use http_headers::ContentType;
-use imop::compression;
 use imop::conditionals::{conditionals, Conditionals};
-use imop::file::{path_from_tail, serve_file, ArcPath, File};
+use imop::file::{self, File};
+use imop::headers::ContentType;
 use imop::image::Optimizations;
+use imop::{compression, mime};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::signal;
-use tokio::sync::broadcast;
+use tokio::{signal, sync::broadcast};
 use warp::{Filter, Rejection};
-
-async fn file_reply(
-    path: ArcPath,
-    conditionals: Conditionals,
-    options: Optimizations,
-) -> Result<File, Rejection> {
-    println!("{:?}", path);
-    // todo: need to get the mime type
-    // todo: parse the compression options
-    // todo: look up if the file was already compressed, if so, get it from the disk cache
-    // todo: if not, compress and save to cache
-    // todo: serve the correct file
-    serve_file(path, conditionals).await
-}
 
 #[derive(Parser, Serialize, Deserialize, Debug, Clone)]
 #[clap(version = "1.0", author = "romnn <contact@romnn.com>")]
-pub struct ImopOptions {
+struct Options {
     #[clap(short = 'i', long = "images", help = "image source path")]
     image_path: PathBuf,
 
@@ -43,16 +28,30 @@ pub struct ImopOptions {
     retain_days: Option<u64>,
 }
 
+async fn file_reply(
+    path: file::Path,
+    conditionals: Conditionals,
+    options: Optimizations,
+) -> Result<File, Rejection> {
+    println!("{:?}", path);
+    // todo: need to get the mime type
+    // todo: parse the compression options
+    // todo: look up if the file was already compressed, if so, get it from the disk cache
+    // todo: if not, compress and save to cache
+    // todo: serve the correct file
+    file::serve(path, conditionals).await
+}
+
 #[tokio::main]
 async fn main() {
-    let options: ImopOptions = ImopOptions::parse();
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&options).expect("options")
-    );
+    let options= Options::parse();
+    // println!(
+    //     "{}",
+    //     serde_json::to_string_pretty(&options).expect("options")
+    // );
 
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
-    let mut server_shutdown_rx = shutdown_tx.subscribe();
+    let mut shutdown_rx = shutdown_tx.subscribe();
 
     let health = warp::path!("healthz").and(warp::get()).map(|| "healthy");
 
@@ -61,7 +60,7 @@ async fn main() {
     let images = warp::path("images")
         .or(warp::head())
         .unify()
-        .and(path_from_tail(base))
+        .and(file::path_from_tail(base))
         .and(conditionals())
         .and(warp::query::<Optimizations>())
         .and_then(file_reply)
@@ -104,12 +103,12 @@ async fn main() {
     let routes = images.or(health);
     let addr = ([0, 0, 0, 0], options.port);
     let shutdown = async move {
-        server_shutdown_rx.recv().await.expect("shutdown server");
+        shutdown_rx.recv().await.expect("shutdown server");
         println!("server shutting down");
     };
     let (_, server) = warp::serve(routes).bind_with_graceful_shutdown(addr, shutdown);
 
-    let tserver = tokio::task::spawn(server);
+    let server_task = tokio::task::spawn(server);
 
     if (signal::ctrl_c().await).is_ok() {
         println!("received shutdown");
@@ -117,6 +116,6 @@ async fn main() {
         shutdown_tx.send(()).expect("shutdown");
     };
 
-    tserver.await.expect("server terminated");
+    server_task.await.expect("server terminated");
     println!("exiting");
 }

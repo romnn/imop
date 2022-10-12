@@ -1,56 +1,47 @@
-pub use crate::content_type_filter::{CompressContentType, ContentTypeFilter};
-use crate::headers::{AcceptEncoding, ContentCoding};
-use async_compression::tokio::bufread::{BrotliEncoder, DeflateEncoder, GzipEncoder};
+pub use super::content_type_filter::{CompressContentType, ContentTypeFilter};
+use super::headers::{AcceptEncoding, ContentCoding};
 pub use async_compression::Level;
 use bytes::Bytes;
-use futures_util::Stream;
+use futures::Stream;
 use http_headers::{ContentType, HeaderMap, HeaderMapExt, HeaderValue};
-use mime_guess::mime;
-use pin_project::pin_project;
 use std::convert::Infallible;
-use std::fmt;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use tokio_util::io::{ReaderStream, StreamReader};
-use warp::http::StatusCode;
-use warp::hyper;
-use warp::reply::Response;
-use warp::Rejection;
-use warp::{Filter, Reply};
+use warp::{hyper, reply, Filter, Rejection};
 
 #[derive(Debug, Clone, Copy)]
-pub enum CompressionAlgo {
+pub enum Algorithm {
     BR,
     DEFLATE,
     GZIP,
 }
 
-impl From<CompressionAlgo> for HeaderValue {
+impl From<Algorithm> for HeaderValue {
     #[inline]
-    fn from(algo: CompressionAlgo) -> Self {
+    fn from(algo: Algorithm) -> Self {
         HeaderValue::from_static(match algo {
-            CompressionAlgo::BR => "br",
-            CompressionAlgo::DEFLATE => "deflate",
-            CompressionAlgo::GZIP => "gzip",
+            Algorithm::BR => "br",
+            Algorithm::DEFLATE => "deflate",
+            Algorithm::GZIP => "gzip",
         })
     }
 }
 
-impl From<ContentCoding> for Option<CompressionAlgo> {
+impl From<ContentCoding> for Option<Algorithm> {
     #[inline]
     fn from(coding: ContentCoding) -> Self {
         match coding {
-            ContentCoding::BROTLI => Some(CompressionAlgo::BR),
-            ContentCoding::COMPRESS => Some(CompressionAlgo::GZIP),
-            ContentCoding::DEFLATE => Some(CompressionAlgo::DEFLATE),
-            ContentCoding::GZIP => Some(CompressionAlgo::GZIP),
+            ContentCoding::BROTLI => Some(Algorithm::BR),
+            ContentCoding::DEFLATE => Some(Algorithm::DEFLATE),
+            ContentCoding::COMPRESS | ContentCoding::GZIP => Some(Algorithm::GZIP),
             ContentCoding::IDENTITY => None,
         }
     }
 }
 
-#[pin_project]
+#[pin_project::pin_project]
 #[derive(Debug)]
 pub struct CompressableBody<S, E>
 where
@@ -83,11 +74,11 @@ impl From<hyper::Body> for CompressableBody<hyper::Body, hyper::Error> {
 }
 
 #[allow(missing_debug_implementations)]
-pub struct Compressed(pub(super) Response);
+pub struct Compressed(pub(super) reply::Response);
 
-impl Reply for Compressed {
+impl warp::Reply for Compressed {
     #[inline]
-    fn into_response(self) -> Response {
+    fn into_response(self) -> reply::Response {
         self.0
     }
 }
@@ -122,7 +113,7 @@ fn compression_options() -> impl Filter<Extract = (CompressionOptions,), Error =
 
 impl From<Compressable> for http::Response<hyper::Body> {
     fn from(c: Compressable) -> http::Response<hyper::Body> {
-        Response::from_parts(c.head, c.body.body)
+        reply::Response::from_parts(c.head, c.body.body)
     }
 }
 
@@ -141,7 +132,7 @@ where
 }
 
 // pub fn algo<F, T>(
-//     algo: CompressionAlgo,
+//     algo: Algorithm,
 //     quality: Level,
 // ) -> impl Fn(F) -> warp::filters::BoxedFilter<(Compressed,)>
 // where
@@ -164,13 +155,11 @@ where
     CT: ContentTypeFilter + Sync + Send + 'static,
 {
     let ctf = Arc::new(content_type_filter);
-    move |filter: F| {
-        compress::<F, T, CT>(Some(CompressionAlgo::BR), quality, ctf.clone(), filter).boxed()
-    }
+    move |filter: F| compress::<F, T, CT>(Some(Algorithm::BR), quality, ctf.clone(), filter).boxed()
 }
 
 fn compress<F, T, CT>(
-    algo: Option<CompressionAlgo>,
+    algo: Option<Algorithm>,
     quality: Level,
     content_type_filter: Arc<CT>,
     filter: F,
@@ -181,6 +170,7 @@ where
     T: warp::Reply + 'static,
     CT: ContentTypeFilter + Sync + Send + 'static,
 {
+    use async_compression::tokio::bufread::{BrotliEncoder, DeflateEncoder, GzipEncoder};
     warp::any()
         .and(filter)
         .and(compression_options())
@@ -188,11 +178,11 @@ where
         .untuple_one()
         .map(
             move |mut compressable: Compressable, options: CompressionOptions| {
-                let prefered_encoding: Option<CompressionAlgo> = options
+                let prefered_encoding: Option<Algorithm> = options
                     .accept_encoding
                     .as_ref()
-                    .and_then(|header| header.prefered_encoding())
-                    .and_then(|encoding| encoding.into());
+                    .and_then(AcceptEncoding::prefered_encoding)
+                    .and_then(Into::into);
 
                 let content_type: Option<ContentType> = compressable.head.headers.typed_get();
                 let algo = if content_type_filter.should_compress(content_type) {
@@ -205,13 +195,13 @@ where
                 let stream = StreamReader::new(compressable.body);
                 let encoded_stream: Box<dyn tokio::io::AsyncRead + Send + std::marker::Unpin> =
                     match algo {
-                        Some(CompressionAlgo::BR) => {
+                        Some(Algorithm::BR) => {
                             Box::new(BrotliEncoder::with_quality(stream, quality))
                         }
-                        Some(CompressionAlgo::DEFLATE) => {
+                        Some(Algorithm::DEFLATE) => {
                             Box::new(DeflateEncoder::with_quality(stream, quality))
                         }
-                        Some(CompressionAlgo::GZIP) => {
+                        Some(Algorithm::GZIP) => {
                             Box::new(GzipEncoder::with_quality(stream, quality))
                         }
                         None => Box::new(stream),
@@ -228,7 +218,7 @@ where
                         .headers
                         .remove(http::header::CONTENT_LENGTH);
                 }
-                Compressed(Response::from_parts(compressable.head, compressed))
+                Compressed(reply::Response::from_parts(compressable.head, compressed))
             },
         )
 }

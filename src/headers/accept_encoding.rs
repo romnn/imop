@@ -3,7 +3,6 @@ use std::convert::TryFrom;
 use super::content_coding::ContentCoding;
 use super::quality_value::{QualityValue, TryFromValues};
 use http_headers::{Header, HeaderName, HeaderValue};
-// use super::{ContentCoding, Error, Header, HeaderName, HeaderValue, QualityValue};
 
 /// `Accept-Encoding` header, defined in
 /// [RFC7231](https://tools.ietf.org/html/rfc7231#section-5.3.4)
@@ -53,6 +52,7 @@ impl Header for AcceptEncoding {
 impl AcceptEncoding {
     /// Convience method to create an `Accept-Encoding: gzip` header
     #[inline]
+    #[must_use]
     pub fn gzip() -> AcceptEncoding {
         AcceptEncoding(HeaderValue::from_static("gzip").into())
     }
@@ -72,7 +72,6 @@ impl AcceptEncoding {
         I: Iterator<Item = (&'i str, f32)>,
     {
         let values: Vec<HeaderValue> = pairs
-            // .map(|pair| QualityValue::try_from(pair).map(|q: QualityValue| HeaderValue::from(q)))
             .map(|pair| <QualityValue>::try_from(pair).map(HeaderValue::from))
             .collect::<Result<Vec<HeaderValue>, http_headers::Error>>()?;
         let value = QualityValue::try_from_values(&mut values.iter())?;
@@ -119,7 +118,7 @@ impl AcceptEncoding {
     /// assert_eq!(encodings.next(), Some(ContentCoding::BROTLI));
     /// assert_eq!(encodings.next(), None);
     /// ```
-    pub fn sorted_encodings<'a>(&'a self) -> impl Iterator<Item = ContentCoding> + 'a {
+    pub fn sorted_encodings(&self) -> impl Iterator<Item = ContentCoding> + '_ {
         self.0.iter().map(ContentCoding::from_name)
     }
 

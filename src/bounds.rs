@@ -62,12 +62,12 @@ impl std::fmt::Display for Size {
 impl Size {
     #[inline]
     pub fn fit_to_bounds(self, bounds: Bounds) -> Result<Self, Error> {
-        let size = match bounds {
+        match bounds {
             // unbounded
             Bounds {
                 width: None,
                 height: None,
-                mode,
+                ..
             } => Ok(self),
             // single dimension is bounded
             Bounds {
@@ -98,8 +98,8 @@ impl Size {
                 height: Some(height),
                 mode,
             } => self.fit(Size { width, height }, mode),
-        };
-        size
+        }
+        // size
         // match size {
         //     Ok(scaled) => Ok(scaled),
         //     // Err(err) => Err(Error {
@@ -118,8 +118,7 @@ impl Size {
         if mode == ScalingMode::Exact {
             return Ok(size);
         }
-        todo!();
-        return Ok(size);
+        Ok(self)
         // match (|| {
         //     let scale = self.scale_factor(target, mode)?;
         //     let scaled = self.scale_by::<_, Ceil>(scale.0)?;

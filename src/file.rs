@@ -4,78 +4,78 @@ use super::headers::{
 };
 use super::FilterClone;
 use bytes::{Bytes, BytesMut};
-use futures_util::future::Either;
-use futures_util::{future, ready, stream, FutureExt, Stream, StreamExt, TryFutureExt};
-use std::cmp;
-use std::io;
-use std::path::{Path, PathBuf};
+use futures::{future, Future, FutureExt, Stream, StreamExt, TryFutureExt};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::Poll;
 use tokio::io::{AsyncRead, AsyncSeek, AsyncSeekExt};
 use tokio_util::io::poll_read_buf;
-use urlencoding::decode;
-use warp::http::StatusCode;
-use warp::hyper;
-use warp::reply::Response;
-use warp::Future;
-use warp::Rejection;
-use warp::{Filter, Reply};
+use warp::{http::StatusCode, hyper, reply, Filter, Rejection};
+
+const DEFAULT_READ_BUF_SIZE: usize = 8_192;
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
-pub struct ArcPath(Arc<PathBuf>);
+pub struct Path(Arc<std::path::PathBuf>);
 
-impl AsRef<Path> for ArcPath {
-    fn as_ref(&self) -> &Path {
+impl AsRef<std::path::Path> for Path {
+    #[inline]
+    fn as_ref(&self) -> &std::path::Path {
         (*self.0).as_ref()
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
-pub enum FileOrigin {
+pub enum Origin {
     Url(reqwest::Url),
-    Path(ArcPath),
+    Path(Path),
 }
 
 #[derive(Debug)]
 pub struct File {
-    pub resp: Response,
-    pub origin: FileOrigin,
+    pub resp: reply::Response,
+    pub origin: Origin,
 }
 
 impl File {
+    #[inline]
     pub fn url(&self) -> Option<&reqwest::Url> {
-        match &self.origin {
-            FileOrigin::Url(url) => Some(&url),
-            _ => None,
+        match self.origin {
+            Origin::Url(ref url) => Some(url),
+            Origin::Path(_) => None,
         }
     }
 
-    pub fn path(&self) -> Option<&Path> {
-        match &self.origin {
-            FileOrigin::Path(path) => Some(path.as_ref()),
-            _ => None,
+    #[inline]
+    pub fn path(&self) -> Option<&std::path::Path> {
+        match self.origin {
+            Origin::Path(ref path) => Some(path.as_ref()),
+            Origin::Url(_) => None,
         }
     }
 }
 
-impl Reply for File {
-    fn into_response(self) -> Response {
+impl warp::Reply for File {
+    #[inline]
+    fn into_response(self) -> reply::Response {
         self.resp
     }
 }
 
+#[inline]
 fn reserve_at_least(buf: &mut BytesMut, cap: usize) {
     if buf.capacity() - buf.len() < cap {
         buf.reserve(cap);
     }
 }
 
-pub fn file_stream<R: AsyncRead + AsyncSeek + std::marker::Unpin + Send>(
+#[inline]
+pub fn stream<R: AsyncRead + AsyncSeek + std::marker::Unpin + Send>(
     mut reader: R,
     (start, end): (u64, u64),
     buf_size: Option<usize>,
-) -> impl Stream<Item = Result<Bytes, io::Error>> + Send {
+) -> impl Stream<Item = Result<Bytes, std::io::Error>> + Send {
+    use futures::future::Either;
+    use num_traits::NumCast;
     use std::io::SeekFrom;
 
     let buf_size = buf_size.unwrap_or(DEFAULT_READ_BUF_SIZE);
@@ -93,16 +93,16 @@ pub fn file_stream<R: AsyncRead + AsyncSeek + std::marker::Unpin + Send>(
             let mut len = end - start;
             let mut f = match result {
                 Ok(f) => f,
-                Err(e) => return Either::Left(stream::once(future::err(e))),
+                Err(e) => return Either::Left(futures::stream::once(future::err(e))),
             };
 
-            Either::Right(stream::poll_fn(move |cx| {
+            Either::Right(futures::stream::poll_fn(move |cx| {
                 if len == 0 {
                     return Poll::Ready(None);
                 }
                 reserve_at_least(&mut buf, buf_size);
 
-                let n = match ready!(poll_read_buf(Pin::new(&mut f), cx, &mut buf)) {
+                let n = match futures::ready!(poll_read_buf(Pin::new(&mut f), cx, &mut buf)) {
                     Ok(n) => n as u64,
                     Err(err) => {
                         return Poll::Ready(Some(Err(err)));
@@ -115,7 +115,7 @@ pub fn file_stream<R: AsyncRead + AsyncSeek + std::marker::Unpin + Send>(
 
                 let mut chunk = buf.split().freeze();
                 if n > len {
-                    chunk = chunk.split_to(len as usize);
+                    chunk = chunk.split_to(NumCast::from(len).unwrap());
                     len = 0;
                 } else {
                     len -= n;
@@ -127,24 +127,22 @@ pub fn file_stream<R: AsyncRead + AsyncSeek + std::marker::Unpin + Send>(
         .flatten()
 }
 
-const DEFAULT_READ_BUF_SIZE: usize = 8_192;
-
+#[inline]
 fn optimal_buf_size(metadata: &std::fs::Metadata) -> usize {
+    use num_traits::NumCast;
     let block_size = get_block_size(metadata);
-
     // If file length is smaller than block size, don't waste space
     // reserving a bigger-than-needed buffer.
-    cmp::min(block_size as u64, metadata.len()) as usize
+    let block_size: u64 = NumCast::from(block_size).unwrap();
+    NumCast::from(metadata.len().min(block_size)).unwrap()
 }
 
 #[cfg(unix)]
 fn get_block_size(metadata: &std::fs::Metadata) -> usize {
+    use num_traits::NumCast;
     use std::os::unix::fs::MetadataExt;
-    //TODO: blksize() returns u64, should handle bad cast...
-    //(really, a block size bigger than 4gb?)
-
     // Use device blocksize unless it's really small.
-    cmp::max(metadata.blksize() as usize, DEFAULT_READ_BUF_SIZE)
+    DEFAULT_READ_BUF_SIZE.max(NumCast::from(metadata.blksize()).unwrap())
 }
 
 #[cfg(not(unix))]
@@ -196,9 +194,13 @@ fn bytes_range(range: Option<Range>, max_len: u64) -> Result<(u64, u64), BadRang
     ret
 }
 
-fn sanitize_path(base: impl AsRef<Path>, tail: &str) -> Result<PathBuf, Rejection> {
-    let mut buf = PathBuf::from(base.as_ref());
-    let p = match decode(tail) {
+#[inline]
+fn sanitize_path(
+    base: impl AsRef<std::path::Path>,
+    tail: &str,
+) -> Result<std::path::PathBuf, Rejection> {
+    let mut buf = std::path::PathBuf::from(base.as_ref());
+    let p = match urlencoding::decode(tail) {
         Ok(p) => p,
         Err(_) => {
             // FromUrlEncodingError doesn't implement StdError
@@ -208,16 +210,17 @@ fn sanitize_path(base: impl AsRef<Path>, tail: &str) -> Result<PathBuf, Rejectio
     for seg in p.split('/') {
         if seg.starts_with("..") || seg.contains('\\') {
             return Err(warp::reject::not_found());
-        } else {
-            buf.push(seg);
         }
+        buf.push(seg);
     }
     Ok(buf)
 }
 
+#[inline]
+#[must_use]
 pub fn path_from_tail(
-    base: Arc<PathBuf>,
-) -> impl FilterClone<Extract = (ArcPath,), Error = Rejection> {
+    base: Arc<std::path::PathBuf>,
+) -> impl FilterClone<Extract = (Path,), Error = Rejection> {
     warp::path::tail().and_then(move |tail: warp::path::Tail| {
         future::ready(sanitize_path(base.as_ref(), tail.as_str())).and_then(|mut buf| async {
             let is_dir = tokio::fs::metadata(buf.clone())
@@ -228,8 +231,7 @@ pub fn path_from_tail(
             if is_dir {
                 buf.push("index.html");
             }
-            // Ok(ArcPath(Arc::new(buf)))
-            Ok(ArcPath(Arc::new(buf)))
+            Ok(Path(Arc::new(buf)))
         })
     })
 }
@@ -245,7 +247,7 @@ async fn file_metadata(
 
 fn file_conditional(
     f: tokio::fs::File,
-    path: ArcPath,
+    path: Path,
     conditionals: Conditionals,
 ) -> impl Future<Output = Result<File, Rejection>> + Send {
     file_metadata(f).map_ok(move |(file, meta)| {
@@ -255,50 +257,49 @@ fn file_conditional(
         let resp = match conditionals.check(modified) {
             Cond::NoBody(resp) => resp,
             Cond::WithBody(range) => {
-                bytes_range(range, len)
-                    .map(|(start, end)| {
-                        let sub_len = end - start;
-                        let buf_size = optimal_buf_size(&meta);
-                        let stream = file_stream(file, (start, end), Some(buf_size));
-                        let body = hyper::Body::wrap_stream(stream);
+                let range = bytes_range(range, len).map(|(start, end)| {
+                    let sub_len = end - start;
+                    let buf_size = optimal_buf_size(&meta);
+                    let file_stream = stream(file, (start, end), Some(buf_size));
+                    let body = hyper::Body::wrap_stream(file_stream);
 
-                        let mut resp = Response::new(body);
+                    let mut resp = reply::Response::new(body);
 
-                        if sub_len != len {
-                            *resp.status_mut() = StatusCode::PARTIAL_CONTENT;
-                            resp.headers_mut().typed_insert(
-                                ContentRange::bytes(start..end, len).expect("valid ContentRange"),
-                            );
+                    if sub_len != len {
+                        *resp.status_mut() = StatusCode::PARTIAL_CONTENT;
+                        resp.headers_mut().typed_insert(
+                            ContentRange::bytes(start..end, len).expect("valid ContentRange"),
+                        );
 
-                            len = sub_len;
-                        }
+                        len = sub_len;
+                    }
 
-                        let mime = mime_guess::from_path(path.as_ref()).first_or_octet_stream();
+                    let mime = mime_guess::from_path(path.as_ref()).first_or_octet_stream();
 
-                        resp.headers_mut().typed_insert(ContentLength(len));
-                        resp.headers_mut().typed_insert(ContentType::from(mime));
-                        resp.headers_mut().typed_insert(AcceptRanges::bytes());
+                    resp.headers_mut().typed_insert(ContentLength(len));
+                    resp.headers_mut().typed_insert(ContentType::from(mime));
+                    resp.headers_mut().typed_insert(AcceptRanges::bytes());
 
-                        if let Some(last_modified) = modified {
-                            resp.headers_mut().typed_insert(last_modified);
-                        }
+                    if let Some(last_modified) = modified {
+                        resp.headers_mut().typed_insert(last_modified);
+                    }
 
-                        resp
-                    })
-                    .unwrap_or_else(|BadRange| {
-                        // bad byte range
-                        let mut resp = Response::new(hyper::Body::empty());
-                        *resp.status_mut() = StatusCode::RANGE_NOT_SATISFIABLE;
-                        resp.headers_mut()
-                            .typed_insert(ContentRange::unsatisfied_bytes(len));
-                        resp
-                    })
+                    resp
+                });
+                range.unwrap_or_else(|BadRange| {
+                    // bad byte range
+                    let mut resp = reply::Response::new(hyper::Body::empty());
+                    *resp.status_mut() = StatusCode::RANGE_NOT_SATISFIABLE;
+                    resp.headers_mut()
+                        .typed_insert(ContentRange::unsatisfied_bytes(len));
+                    resp
+                })
             }
         };
 
         File {
             resp,
-            origin: FileOrigin::Path(path),
+            origin: Origin::Path(path),
         }
     })
 }
@@ -311,13 +312,14 @@ impl warp::reject::Reject for FilePermissionError {}
 struct FileOpenError;
 impl warp::reject::Reject for FileOpenError {}
 
-pub async fn serve_file(path: ArcPath, conditionals: Conditionals) -> Result<File, Rejection> {
+pub async fn serve(path: Path, conditionals: Conditionals) -> Result<File, Rejection> {
+    use std::io::ErrorKind;
     match tokio::fs::File::open(&path).await {
         Ok(f) => file_conditional(f, path, conditionals).await,
         Err(err) => {
             let rej = match err.kind() {
-                io::ErrorKind::NotFound => warp::reject::not_found(),
-                io::ErrorKind::PermissionDenied => warp::reject::custom(FilePermissionError {}),
+                ErrorKind::NotFound => warp::reject::not_found(),
+                ErrorKind::PermissionDenied => warp::reject::custom(FilePermissionError {}),
                 _ => warp::reject::custom(FileOpenError {}),
             };
             Err(rej)

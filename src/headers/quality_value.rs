@@ -23,7 +23,6 @@ pub struct QualityValue<QualSep = SemiQ> {
 pub trait TryFromValues: Sized {
     fn try_from_values<'i, I>(values: &mut I) -> Result<Self, http_headers::Error>
     where
-        Self: Sized,
         I: Iterator<Item = &'i HeaderValue>;
 }
 
@@ -48,7 +47,7 @@ mod sealed {
     use std::marker::PhantomData;
 
     use http_headers::HeaderValue;
-    use itertools::Itertools;
+    // use itertools::Itertools;
 
     #[derive(Clone, PartialEq, Eq, Hash)]
     pub(super) struct FlatCsv<Sep = Comma> {
@@ -88,18 +87,8 @@ mod sealed {
                             }
                             false // dont split
                         }
-                        // else {
-                        //     if c == Sep::CHAR {
-                        //         true // split
-                        //     } else {
-                        //         if c == '"' {
-                        //             in_quotes = true;
-                        //         }
-                        //         false // dont split
-                        //     }
-                        // }
                     })
-                    .map(|item| item.trim())
+                    .map(str::trim)
             })
         }
     }
@@ -155,8 +144,7 @@ mod sealed {
             let mut buf = values
                 .next()
                 .cloned()
-                .map(|val| BytesMut::from(val.as_bytes()))
-                .unwrap_or_else(BytesMut::new);
+                .map_or_else(BytesMut::new, |val| BytesMut::from(val.as_bytes()));
 
             for val in values {
                 buf.extend_from_slice(&[Sep::BYTE, b' ']);
@@ -186,8 +174,7 @@ mod sealed {
             // Otherwise, there are multiple, so this should merge them into 1.
             let mut buf = values
                 .next()
-                .map(|val| BytesMut::from(val.as_bytes()))
-                .unwrap_or_else(BytesMut::new);
+                .map_or_else(BytesMut::new, |val| BytesMut::from(val.as_bytes()));
 
             for val in values {
                 buf.extend_from_slice(&[Sep::BYTE, b' ']);
@@ -244,12 +231,14 @@ mod sealed {
         type Error = http_headers::Error;
 
         fn try_from(val: &'a str) -> Result<Self, Self::Error> {
+            use num_traits::NumCast;
             let mut parts: Vec<&str> = val.split(Delm::STR).collect();
 
             match (parts.pop(), parts.pop()) {
                 (Some(qual), Some(data)) => {
                     let parsed: f32 = qual.parse().map_err(|_| http_headers::Error::invalid())?;
-                    let quality = (parsed * 1000_f32) as u16;
+                    let quality: u16 = NumCast::from(parsed * 1000_f32)
+                        .ok_or_else(http_headers::Error::invalid)?;
 
                     Ok(QualityMeta {
                         data,
@@ -257,7 +246,7 @@ mod sealed {
                         _marker: PhantomData,
                     })
                 }
-                // No deliter present, assign a quality value of 1
+                // No delimiter present, assign a quality value of 1
                 (Some(data), None) => Ok(QualityMeta {
                     data,
                     quality: 1000_u16,
@@ -270,12 +259,13 @@ mod sealed {
 
     impl<Delm: QualityDelimiter + Ord> QualityValue<Delm> {
         pub fn iter(&self) -> impl Iterator<Item = &str> {
-            self.csv
+            let mut values: Vec<_> = self
+                .csv
                 .iter()
                 .map(|v| QualityMeta::<Delm>::try_from(v).unwrap())
-                .into_iter()
-                .sorted()
-                .map(|pair| pair.data)
+                .collect();
+            values.sort();
+            values.into_iter().map(|pair| pair.data)
         }
     }
 

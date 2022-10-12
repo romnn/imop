@@ -8,7 +8,6 @@ edition = "2021"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-image = "0"
 clap = { version = "3", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
@@ -16,16 +15,15 @@ tokio-util = { version = "0.7", features = ["io", "compat"] }
 # warp = { version = "0.3", features = ["multipart", "compression"] }
 warp = { version = "0.3", features = ["multipart"] }
 async-compression = { version = "0.3", features = ["tokio", "brotli", "deflate", "gzip"], optional = true }
-# anyhow = "1"
 async-trait = "0"
 serde_json = "1"
 lazy_static = "1"
-futures-util = "0.3"
-parking_lot = "0.12"
-caches = "0.2"
-linked_hash_set = "0.1"
-digest = "0.10"
-base64 = "0.13"
+# futures = "0.3"
+# futures-util = "0.3"
+# parking_lot = "0.12"
+num-traits = "0.2"
+# digest = "0.10"
+# base64 = "0.13"
 futures = "0.3"
 urlencoding = "2"
 reqwest = { version = "0.11", features = [ "stream" ] }
@@ -34,10 +32,22 @@ http-headers = { version = "0.3", package = "headers" }
 mime_guess = "2"
 bytes = "1"
 pin-project = "1"
-itertools = "0.10"
+# itertools = "0.10"
 thiserror = "1"
-lru = "0.7"
+
+# image backend
+image = "0"
+
+# cache
+caches = { version = "0.2", optional = true }
+linked_hash_set = { version = "0.1", optional = true }
+lru = { version = "0.7", optional = true }
 
 [features]
+# todo: make image a custom backend
 default = ["compression"]
-compression = ["async-compression"]
+compression = ["dep:async-compression"]
+cache = ["dep:caches", "dep:linked_hash_set", "dep:lru"]
+
+[package.metadata.cargo-feature-combinations]
+denylist = ["default"]

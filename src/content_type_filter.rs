@@ -13,15 +13,19 @@ pub enum CompressContentType {
 }
 
 impl CompressContentType {
-    pub fn include<I: IntoIterator<Item = mime::Mime>>(iter: I) -> Self {
-        Self::Include(HashSet::from_iter(iter.into_iter()))
+    #[inline]
+    pub fn include(iter: impl IntoIterator<Item = mime::Mime>) -> Self {
+        Self::Include(iter.into_iter().collect())
     }
-    pub fn exclude<I: IntoIterator<Item = mime::Mime>>(iter: I) -> Self {
-        Self::Exclude(HashSet::from_iter(iter.into_iter()))
+
+    #[inline]
+    pub fn exclude(iter: impl IntoIterator<Item = mime::Mime>) -> Self {
+        Self::Exclude(iter.into_iter().collect())
     }
 }
 
 impl Default for CompressContentType {
+    #[inline]
     fn default() -> Self {
         lazy_static::lazy_static! {
             static ref DEFAULT_MIME_TO_COMPRESS: Vec<mime::Mime> = vec![
@@ -55,6 +59,8 @@ impl Default for CompressContentType {
     }
 }
 
+#[inline]
+#[must_use]
 pub fn mime_subset_of(candidate: &mime::Mime, subset_of: &mime::Mime) -> bool {
     // println!("candidate: {} {}", candidate.type_(), candidate.subtype());
     // println!("subset_of: {} {}", subset_of.type_(), subset_of.subtype());
@@ -69,24 +75,21 @@ pub fn mime_subset_of(candidate: &mime::Mime, subset_of: &mime::Mime) -> bool {
 }
 
 impl ContentTypeFilter for CompressContentType {
+    #[inline]
     fn should_compress(&self, content_type: Option<ContentType>) -> bool {
         let mime: Option<mime::Mime> = content_type.map(Into::into);
         match self {
             CompressContentType::All => true,
-            CompressContentType::Include(include) => mime
-                .map(|mime| {
-                    include
-                        .iter()
-                        .any(|included| mime_subset_of(&mime, included))
-                })
-                .unwrap_or(false),
-            CompressContentType::Exclude(exclude) => mime
-                .map(|mime| {
-                    exclude
-                        .iter()
-                        .all(|excluded| !mime_subset_of(&mime, excluded))
-                })
-                .unwrap_or(true),
+            CompressContentType::Include(include) => mime.map_or(false, |mime| {
+                include
+                    .iter()
+                    .any(|included| mime_subset_of(&mime, included))
+            }),
+            CompressContentType::Exclude(exclude) => mime.map_or(true, |mime| {
+                exclude
+                    .iter()
+                    .all(|excluded| !mime_subset_of(&mime, excluded))
+            }),
         }
     }
 }
@@ -94,7 +97,6 @@ impl ContentTypeFilter for CompressContentType {
 #[cfg(test)]
 mod tests {
     use super::{CompressContentType, ContentTypeFilter};
-    // use anyhow::Result;
     use http_headers::ContentType;
     use mime_guess::mime;
 
@@ -104,60 +106,38 @@ mod tests {
 
     #[test]
     fn test_compress_content_type_special_cases() {
-        assert_eq!(
-            CompressContentType::exclude(vec![]).should_compress(Some(content_type("image/png"))),
-            true
+        assert!(
+            CompressContentType::exclude(vec![]).should_compress(Some(content_type("image/png")))
         );
-        assert_eq!(
-            CompressContentType::include(vec![]).should_compress(Some(content_type("image/png"))),
-            false
+        assert!(
+            !CompressContentType::include(vec![]).should_compress(Some(content_type("image/png")))
         );
-        assert_eq!(
-            CompressContentType::All.should_compress(Some(content_type("image/png"))),
-            true
-        );
-        assert_eq!(
-            CompressContentType::include(vec![]).should_compress(None),
-            false
-        );
-        assert_eq!(
-            CompressContentType::exclude(vec![]).should_compress(None),
-            true
-        );
+        assert!(CompressContentType::All.should_compress(Some(content_type("image/png"))));
+        assert!(!CompressContentType::include(vec![]).should_compress(None));
+        assert!(CompressContentType::exclude(vec![]).should_compress(None));
     }
 
     #[test]
     fn test_compress_content_type_exlude_images() {
-        let test = ContentType::from("image/png".parse::<mime::Mime>().unwrap());
         let f = CompressContentType::exclude(vec![mime::IMAGE_STAR]);
-        assert_eq!(f.should_compress(Some(content_type("image/png"))), false);
-        assert_eq!(f.should_compress(Some(content_type("image/jpeg"))), false);
-        assert_eq!(f.should_compress(Some(content_type("image/*"))), false);
-        assert_eq!(f.should_compress(Some(content_type("text/html"))), true);
-        assert_eq!(f.should_compress(Some(content_type("text/*"))), true);
-        assert_eq!(f.should_compress(Some(content_type("text/*"))), true);
-        // CompressContentType::include(vec![]),
-        // CompressContentType::exclude(vec![]),
-        // CompressContentType::exclude(vec![mime::IMAGE_STAR]),
-        // Ok(())
+        assert!(!f.should_compress(Some(content_type("image/png"))));
+        assert!(!f.should_compress(Some(content_type("image/jpeg"))));
+        assert!(!f.should_compress(Some(content_type("image/*"))));
+        assert!(f.should_compress(Some(content_type("text/html"))));
+        assert!(f.should_compress(Some(content_type("text/*"))));
+        assert!(f.should_compress(Some(content_type("text/*"))));
     }
 
     #[test]
     fn test_compress_content_type_default() {
         let f = CompressContentType::default();
-        assert_eq!(f.should_compress(Some(content_type("image/png"))), false);
-        assert_eq!(f.should_compress(Some(content_type("image/jpeg"))), false);
-        assert_eq!(f.should_compress(Some(content_type("image/*"))), false);
-        assert_eq!(f.should_compress(Some(content_type("text/html"))), true);
-        assert_eq!(f.should_compress(Some(content_type("text/*"))), true);
-        assert_eq!(f.should_compress(Some(content_type("text/*"))), true);
-        assert_eq!(
-            f.should_compress(Some(content_type("application/wasm"))),
-            true
-        );
-        assert_eq!(
-            f.should_compress(Some(content_type("application/json"))),
-            true
-        );
+        assert!(!f.should_compress(Some(content_type("image/png"))));
+        assert!(!f.should_compress(Some(content_type("image/jpeg"))));
+        assert!(!f.should_compress(Some(content_type("image/*"))));
+        assert!(f.should_compress(Some(content_type("text/html"))));
+        assert!(f.should_compress(Some(content_type("text/*"))));
+        assert!(f.should_compress(Some(content_type("text/*"))));
+        assert!(f.should_compress(Some(content_type("application/wasm"))));
+        assert!(f.should_compress(Some(content_type("application/json"))));
     }
 }
