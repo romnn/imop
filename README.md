@@ -23,11 +23,16 @@ cargo run --example basic -- --images ./data --cache ./tmp
 You can use
 
 #### TODO
+- implement cache access trait (size, get, put)
+- how to add persistence?
+    - none for the memory version
+    - for files: filepath in some serde data structure
+- implement the cache
+
 - implement the cli based production server
   - how to differentiate between static file server and api
 
 - make the image library generic trait as well
-- implement the cache
 - split into different examples
 - do the image resize and encoding in a blocking pool
 

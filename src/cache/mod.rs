@@ -1,66 +1,82 @@
-pub mod error;
-pub mod filesystem;
-pub mod image;
-pub mod lfu;
+#![allow(warnings)]
+
+// pub mod error;
+// pub mod image;
+// pub mod lfu;
+// pub mod filesystem;
 pub mod memory;
+// pub mod deser;
+// pub mod newmemory;
 
-pub use self::error::Error;
-pub use self::image::{CachedImage, ImageCache};
-pub use filesystem::FileSystemImageCache;
-pub use lfu::LFUCache;
-pub use memory::InMemoryImageCache;
+// pub use self::error::Error;
+// pub use self::image::{CachedImage, ImageCache};
+// pub use filesystem::FileSystemImageCache;
+// pub use lfu::LFUCache;
+// pub use memory::InMemoryImageCache;
 
+use async_trait::async_trait;
 use std::borrow::Borrow;
 use std::hash::Hash;
-use std::rc::Rc;
 
-pub enum PutResult<K, V> {
+pub enum PutResult {
     Put,
     Update,
-    Evicted { key: K, value: V },
+    // Evicted { key: K, value: V },
 }
 
+// pub enum PutResult<K, V> {
+//     Put,
+//     Update,
+//     Evicted { key: K, value: V },
+// }
+
+#[async_trait]
 pub trait Cache<K, V>
 where
     K: Clone + Hash + Eq,
 {
-    fn put(&mut self, k: K, v: V) -> PutResult<K, V>;
+    // async fn put(&mut self, k: K, v: V) -> PutResult<K, V>;
+    async fn put(&mut self, k: K, v: V) -> PutResult;
 
-    fn get<'a, Q>(&'a mut self, k: &'a Q) -> Option<&'a V>
+    async fn get<'a, Q>(&'a mut self, k: &'a Q) -> Option<&'a V>
     where
         K: Borrow<Q>,
-        Q: ToOwned<Owned = K> + Eq + Hash + ?Sized + Clone;
+        Q: ToOwned<Owned = K> + Hash + Eq + Sync;
+        // Q: Hash + Eq + Sync;
+    // Q: ToOwned<Owned = K> + Eq + Hash + ?Sized + Clone + Sync;
 
-    fn get_mut<'a, Q>(&'a mut self, k: &'a Q) -> Option<&'a mut V>
+    async fn get_mut<'a, Q>(&'a mut self, k: &'a Q) -> Option<&'a mut V>
     where
         K: Borrow<Q>,
-        Q: ToOwned<Owned = K> + Eq + Hash + ?Sized + Clone;
+        Q: ToOwned<Owned = K> + Eq + Hash + ?Sized + Clone + Sync;
 
-    fn peek<'a, Q>(&self, k: &'a Q) -> Option<&'a V>
+    async fn peek<'a, Q>(&'a self, k: &'a Q) -> Option<&'a V>
     where
         K: Borrow<Q>,
-        Q: Eq + Hash + ?Sized;
+        Q: Eq + Hash + ?Sized + Sync;
 
-    fn peek_mut<'a, Q>(&'a mut self, k: &'a Q) -> Option<&'a mut V>
+    async fn peek_mut<'a, Q>(&'a mut self, k: &'a Q) -> Option<&'a mut V>
     where
         K: Borrow<Q>,
-        Q: Eq + Hash + ?Sized;
+        Q: Eq + Hash + ?Sized + Sync;
 
-    fn contains<Q>(&self, k: &Q) -> bool
+    async fn contains<Q>(&self, k: &Q) -> bool
     where
         K: Borrow<Q>,
-        Q: Eq + Hash + ?Sized;
+        Q: Eq + Hash + ?Sized + Sync;
 
-    fn remove<Q>(&mut self, k: &Q) -> Option<V>
+    async fn remove<Q>(&mut self, k: &Q) -> Option<V>
     where
         K: Borrow<Q>,
-        Q: Eq + Hash + ?Sized;
+        Q: Eq + Hash + ?Sized + Sync;
 
-    fn purge(&mut self);
+    async fn purge(&mut self);
 
-    fn len(&self) -> usize;
+    async fn len(&self) -> usize;
 
-    fn cap(&self) -> Option<usize>;
+    async fn cap(&self) -> Option<usize>;
 
-    fn is_empty(&self) -> bool;
+    async fn is_empty(&self) -> bool {
+        self.len().await == 0
+    }
 }

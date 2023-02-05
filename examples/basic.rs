@@ -3,9 +3,9 @@
 use anyhow::Result;
 use clap::Parser;
 use futures::stream::{StreamExt, TryStreamExt};
-use imop::cache::{
-    CachedImage, Error as CacheError, FileSystemImageCache, ImageCache, InMemoryImageCache,
-};
+// use imop::cache::{
+//     CachedImage, Error as CacheError, FileSystemImageCache, ImageCache, InMemoryImageCache,
+// };
 use imop::compression;
 use imop::conditionals::{conditionals, Conditionals};
 use imop::file::{file_stream, path_from_tail, serve_file, ArcPath, File, FileOrigin};

@@ -6,6 +6,7 @@ pub trait ContentTypeFilter {
     fn should_compress(&self, content_type: Option<ContentType>) -> bool;
 }
 
+#[derive(Debug, Clone)]
 pub enum CompressContentType {
     All,
     Include(HashSet<mime::Mime>),
@@ -45,11 +46,12 @@ impl Default for CompressContentType {
                     "font/otf",
                     "font/ttf",
                     "image/svg+xml",
-                    "text/css",
-                    "text/html",
-                    "text/javascript",
-                    "text/plain",
-                    "text/xml",
+                    "text/*",
+                    // "text/css",
+                    // "text/html",
+                    // "text/javascript",
+                    // "text/plain",
+                    // "text/xml",
                 ]
                 .iter()
                 .map(|m| m.parse().expect("valid mime type"))
@@ -78,6 +80,8 @@ impl ContentTypeFilter for CompressContentType {
     #[inline]
     fn should_compress(&self, content_type: Option<ContentType>) -> bool {
         let mime: Option<mime::Mime> = content_type.map(Into::into);
+        // dbg!(&mime);
+        // dbg!(&self);
         match self {
             CompressContentType::All => true,
             CompressContentType::Include(include) => mime.map_or(false, |mime| {
@@ -125,7 +129,6 @@ mod tests {
         assert!(!f.should_compress(Some(content_type("image/*"))));
         assert!(f.should_compress(Some(content_type("text/html"))));
         assert!(f.should_compress(Some(content_type("text/*"))));
-        assert!(f.should_compress(Some(content_type("text/*"))));
     }
 
     #[test]
@@ -135,7 +138,6 @@ mod tests {
         assert!(!f.should_compress(Some(content_type("image/jpeg"))));
         assert!(!f.should_compress(Some(content_type("image/*"))));
         assert!(f.should_compress(Some(content_type("text/html"))));
-        assert!(f.should_compress(Some(content_type("text/*"))));
         assert!(f.should_compress(Some(content_type("text/*"))));
         assert!(f.should_compress(Some(content_type("application/wasm"))));
         assert!(f.should_compress(Some(content_type("application/json"))));

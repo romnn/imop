@@ -35,6 +35,7 @@ pin-project = "1"
 # itertools = "0.10"
 thiserror = "1"
 
+# c
 # image backend
 image = "0"
 
@@ -42,12 +43,31 @@ image = "0"
 caches = { version = "0.2", optional = true }
 linked_hash_set = { version = "0.1", optional = true }
 lru = { version = "0.7", optional = true }
+# serde_json
+# serde_cbor
+# flate
+serde_cbor = { version = "0", optional = true }
+rmp-serde = { version = "1", optional = true }
+sha2 = { version = "0.10", optional = true }
+
+[dev-dependencies]
+pretty_assertions = "1"
+criterion = "0.4"
+tempfile = "3"
+anyhow = "1"
 
 [features]
 # todo: make image a custom backend
-default = ["compression"]
+default = ["cache", "compression"]
 compression = ["dep:async-compression"]
-cache = ["dep:caches", "dep:linked_hash_set", "dep:lru"]
+cache = [
+  "dep:caches",
+  "dep:linked_hash_set",
+  "dep:lru",
+  "dep:serde_cbor",
+  "dep:rmp-serde",
+  "dep:sha2",
+]
 
 [package.metadata.cargo-feature-combinations]
 denylist = ["default"]

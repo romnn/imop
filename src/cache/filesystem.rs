@@ -1,166 +1,589 @@
-use super::error::Error;
-use super::image::{CachedImage, ImageCache};
-use super::lfu::LFUCache;
 use super::Cache;
-use super::PutResult;
-use crate::image::ImageFormat;
 use async_trait::async_trait;
-use base64;
-use digest::{generic_array::GenericArray, Digest};
-use lru::LruCache;
 use std::borrow::Borrow;
-use std::collections::hash_map::DefaultHasher;
 use std::hash::Hash;
-use std::hash::Hasher;
-use std::ops::Deref;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use tokio::io::AsyncReadExt;
-use tokio::sync::RwLock;
+use std::marker::PhantomData;
+use std::path::PathBuf;
 
-#[derive(Clone)]
-pub struct FileImage {
-    path: PathBuf,
-    format: ImageFormat,
-}
+// #[derive(thiserror::Error, Debug)]
+// pub enum Error<S, D>
+// where
+//     S: std::error::Error,
+//     D: std::error::Error,
+// {
+//     // #[error("cache entry not found")]
+//     // NotFound,
 
-#[async_trait]
-impl CachedImage for FileImage {
-    type Data = tokio::fs::File;
+//     // // this should never happen
+//     // #[error("no capacity for new entry")]
+//     // NoCapacity,
 
-    fn format(&self) -> image::ImageFormat {
-        self.format
-    }
+//     // #[error("io error: `{0}`")]
+//     #[error(transparent)]
+//     Io(#[from] std::io::Error),
 
-    async fn content_length(&self) -> Result<usize, Error> {
-        let file = tokio::fs::File::open(&self.path)
-            .await
-            .map_err(Error::from)?;
-        let meta = file.metadata().await.map_err(Error::from)?;
-        Ok(meta.len() as usize)
-    }
+//     #[error(transparent)]
+//     Serialize(#[from] S),
+//     // #[error("invalid image: `{0}`")]
+//     // Invalid(#[from] crate::image::Error),
+// }
 
-    async fn data(&self) -> Result<Self::Data, Error> {
-        tokio::fs::File::open(&self.path).await.map_err(Error::from)
-    }
-}
+// // #[async_trait]
+// pub trait DeserializeAsync<V> {
+//     type Error: std::error::Error;
 
-// struct EvictionHandler {}
+//     fn deserialize_from<R>(&self, reader: &mut R) -> Result<V, Self::Error>
+//     where
+//         // V: serde::Deserialize<'de>,
+//         R: tokio::io::AsyncRead;
+// }
 
-// impl caches::OnEvictCallback for EvictionHandler {
-//     fn on_evict<K, V>(&self, key: &K, _: &V) {
-//         // TODO: delete file based on key
+// pub trait SerializeAsync<V> {
+//     type Error: std::error::Error;
+
+//     fn serialize_to<W>(&self, value: &V, writer: &mut W) -> Result<(), Self::Error>
+//     where
+//         //     V: serde::Serialize,
+//         W: tokio::io::AsyncWrite;
+// }
+
+// pub struct MessagePack {}
+
+// impl<'de, V> Deserialize<V> for MessagePack
+// where
+//     V: serde::Deserialize<'de>,
+// {
+//     type Error = rmp_serde::decode::Error;
+
+//     fn deserialize_from<R>(&self, reader: &mut R) -> Result<V, Error<Self::Error>>
+//     where
+//         R: std::io::Read,
+//     {
+//         V::deserialize(&mut rmp_serde::Deserializer::new(reader)).map_err(Error::Test)
 //     }
 // }
 
-pub struct FileSystemImageCache<K>
-where
-    K: Clone + Hash + Eq,
-{
-    // inner: caches::RawLRU<K, FileImage, EvictionHandler>,
-    inner: RwLock<LFUCache<K, FileImage>>,
-    cache_dir: PathBuf,
-}
-
-// fn create_hash<V, D>(v: &V, mut hasher: D) -> String
+// impl<V> Serialize<V> for MessagePack
 // where
-//     V: Hash,
-//     D: Digest,
-//     digest::Output<D>: std::fmt::LowerHex,
+//     V: serde::Serialize + Sync,
 // {
-//     hasher.update(v);
-//     format!("{:x}", hasher.finalize())
+//     type Error = rmp_serde::encode::Error;
+
+//     fn serialize_to<W>(&self, value: &V, writer: &mut W) -> Result<(), Error<Self::Error>>
+//     where
+//         W: std::io::Write,
+//     {
+//         value
+//             .serialize(&mut rmp_serde::Serializer::new(writer))
+//             .map_err(Error::Test)
+//     }
 // }
 
-fn guess_format<P: AsRef<Path>>(path: P) -> Option<image::ImageFormat> {
-    let mime = mime_guess::from_path(&path).first();
-    mime.and_then(image::ImageFormat::from_mime_type)
+pub struct LFU<K, V, DS>
+where
+    K: Hash + Eq,
+{
+    inner: super::memory::LFU<K, ()>,
+    deser: DS,
+    path: PathBuf,
+    value: PhantomData<V>,
 }
 
-impl<K> FileSystemImageCache<K>
+impl<K, V, DS> LFU<K, V, DS>
 where
-    K: Clone + Hash + Eq,
+    K: Hash + Eq,
 {
-    pub fn new<P: Into<PathBuf> + AsRef<Path>>(cache_dir: P, capacity: usize) -> Self {
-        // let inner = caches::RawLRU::with_on_evict_cb(capacity, EvictionHandler {}).unwrap();
-        let inner = RwLock::new(LFUCache::with_capacity(capacity));
-        let _ = std::fs::create_dir_all(&cache_dir);
+    pub fn new(path: impl Into<PathBuf>, deser: DS) -> Self {
+        let inner = super::memory::LFU::with_capacity(None);
         Self {
+            value: PhantomData,
+            path: path.into(),
             inner,
-            cache_dir: cache_dir.into(),
+            deser,
         }
     }
 
-    pub fn entry(&self, k: &K) -> String {
-        let mut hasher = DefaultHasher::new();
-        (*k).hash(&mut hasher);
-        let hashed = hasher.finish();
-        let encoded = base64::encode(&format!("{}", hashed));
-        encoded
+    pub fn capacity(self, capacity: impl Into<Option<usize>>) -> Self {
+        let inner = super::memory::LFU::with_capacity(capacity.into());
+        Self { inner, ..self }
     }
 
-    pub fn path(&self, k: &K) -> PathBuf {
-        let mut path = self.cache_dir.to_owned();
-        path.push(self.entry(k));
-        path
+    // async pub fn value_file_async<'a, Q>(&self, key: &'a Q) -> PathBuf
+    // where
+    //     K: Borrow<Q>,
+    //     Q: Hash,
+    // {
+    //     tokio::fs::OpenOptions::new().read(true)
+    //     // self.path.join(Self::key_hash(key)).with_extension(".value")
+    // }
+
+    pub fn value_path<'a, Q>(&self, key: &'a Q) -> PathBuf
+    where
+        K: Borrow<Q>,
+        Q: Hash,
+    {
+        self.path.join(Self::key_hash(key)).with_extension(".value")
+    }
+
+    pub fn key_path<'a, Q>(&self, key: &'a Q) -> PathBuf
+    where
+        K: Borrow<Q>,
+        Q: Hash,
+    {
+        self.path.join(Self::key_hash(key)).with_extension(".key")
+    }
+
+    pub fn key_hash<'a, Q>(key: &'a Q) -> String
+    where
+        K: Borrow<Q>,
+        // Q: ToOwned<Owned = K> + Hash + Eq + Sync,
+        Q: Hash, //  + Eq + Sync,
+    {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        key.hash(&mut hasher);
+        // hasher.finish()
+        // use sha2::Digest;
+        // let mut hasher = sha2::Sha256::new();
+        // key.hash(&mut hasher);
+        // hasher.update(key);
+        // std::io::copy(&mut file, &mut hasher)?;
+        // format!("{:X}", hasher.finalize())
+        format!("{:X}", hasher.finish())
     }
 }
 
-#[async_trait]
-impl<K> ImageCache<K, FileImage> for FileSystemImageCache<K>
+// #[async_trait]
+// pub trait Get<K, V> {
+//     async fn get<'a, Q>(&'a mut self, k: &'a Q) -> Result<Option<V>, Error>
+//     // <DS::Error>>
+//     where
+//         K: Borrow<Q>,
+//         Q: ToOwned<Owned = K> + Hash + Eq + Sync;
+// }
+
+// #[async_trait]
+impl<'de, K, V, DS> LFU<K, V, DS>
 where
-    K: Clone + Hash + Eq + Sync + Send,
+    K: Clone + Hash + Eq + Send + Sync,
+    V: Send + Sync,
+    DS: Deserialize<V> + Send + Sync,
 {
-    #[inline]
-    async fn put<D: tokio::io::AsyncRead + std::marker::Unpin + Send>(
-        &self,
-        k: K,
-        mut data: D,
-        format: image::ImageFormat,
-    ) -> Result<Option<FileImage>, Error> {
-        let path = self.path(&k);
-        let entry = FileImage {
-            path: path.clone(),
-            format,
+    async fn get<'a, Q>(&'a mut self, k: &'a Q) -> Result<Option<V>, Error<DS::Error>>
+    where
+        K: Borrow<Q>,
+        Q: ToOwned<Owned = K> + Hash + Eq + Sync,
+    {
+        self.inner.get(k).await;
+        // self.update_freq_bin(k);
+        let value_file = match std::fs::OpenOptions::new()
+            .read(true)
+            .create(false)
+            .open(self.value_path(k))
+        {
+            Ok(file) => file,
+            Err(err) => match err.kind() {
+                std::io::ErrorKind::NotFound => return Ok(None),
+                _ => return Err(Error::Io(err)),
+            },
         };
-        let mut lock = self.inner.write().await;
-        match lock.put(k, entry) {
-            PutResult::Put | PutResult::Update => {
-                crate::debug!("putting image {:?}", &path);
-                let mut file = tokio::fs::OpenOptions::new()
-                    .read(false)
-                    .write(true)
-                    .create(true)
-                    .truncate(true)
-                    .open(&path)
-                    .await?;
-                tokio::io::copy(&mut data, &mut file).await?;
-                Ok(None)
-            }
-            _ => Err(Error::NoCapacity),
-        }
+
+        let value: V = self
+            .deser
+            .deserialize_from(&mut std::io::BufReader::new(value_file))
+            .unwrap();
+
+        Ok(Some(value))
+    }
+}
+
+// #[async_trait]
+// impl<'de, K, V, DS> Get<K, V> for LFU<K, V, DS>
+// where
+//     K: Clone + Hash + Eq + Send + Sync,
+//     V: Send + Sync,
+//     DS: DeserializeAsync<V> + Send + Sync,
+// {
+//     async fn get<'a, Q>(&'a mut self, k: &'a Q) -> Result<Option<V>, Error>
+//     // <DS::Error>>
+//     where
+//         K: Borrow<Q>,
+//         Q: ToOwned<Owned = K> + Hash + Eq + Sync,
+//     {
+//         self.inner.get(k).await;
+//         // self.update_freq_bin(k);
+//         let value_file = match std::fs::OpenOptions::new()
+//             .read(true)
+//             .create(false)
+//             .open(self.value_path(k))
+//         {
+//             Ok(file) => file,
+//             Err(err) => match err.kind() {
+//                 std::io::ErrorKind::NotFound => return Ok(None),
+//                 _ => return Err(Error::Io(err)),
+//             },
+//         };
+
+//         Ok(None)
+//         // let value: V = self
+//         //     .deser
+//         //     .deserialize_from(&mut std::io::BufReader::new(value_file))
+//         //     .unwrap();
+
+//         // Ok(Some(value))
+//     }
+// }
+
+// #[async_trait]
+// impl<'de, K, V, DS> super::Cache<K, V> for LFU<K, V, DS>
+// where
+//     K: serde::Serialize + Clone + Hash + Eq + Send + Sync,
+//     // for<'de> &'de K: serde::Deserialize<'de>,
+//     V: serde::Serialize + serde::Deserialize<'de> + Send + Sync,
+//     // for<'de> &'de V: serde::Deserialize<'de>,
+//     DS: Serialize<K> + Deserialize<K> + Serialize<V> + Deserialize<V> + Send + Sync,
+// {
+//     // async fn put(&mut self, k: K, v: V) -> super::PutResult<K, V> {
+//     async fn put(&mut self, k: K, v: V) -> super::PutResult {
+//         // if let Some(counter) = self.values.get_mut(&k) {
+//         //     counter.value = v;
+//         //     self.update_freq_bin(&k);
+//         //     return super::PutResult::Update;
+//         // }
+//         // if let Some(capacity) = self.capacity {
+//         //     if self.len().await >= capacity {
+//         //         self.evict();
+//         //     }
+//         // }
+//         // self.values
+//         //     .insert(k.clone(), ValueCounter { value: v, count: 1 });
+//         // self.min_frequency = 1;
+//         // self.freq_bin
+//         //     .entry(self.min_frequency)
+//         //     .or_default()
+//         //     .insert(k);
+
+//         let value_file = std::fs::OpenOptions::new()
+//             .write(true)
+//             .create(true)
+//             .truncate(true)
+//             .open(self.value_path(&k))
+//             .unwrap();
+//         // let value_writer =
+//         self.deser
+//             .serialize_to(&v, &mut std::io::BufWriter::new(value_file))
+//             .unwrap();
+
+//         let key_file = std::fs::OpenOptions::new()
+//             .write(true)
+//             .create(true)
+//             .truncate(true)
+//             .open(self.key_path(&k))
+//             .unwrap();
+//         // .await;
+//         self.deser
+//             .serialize_to(&k, &mut std::io::BufWriter::new(key_file))
+//             .unwrap();
+
+//         self.inner.put(k, ()).await
+//         // match self.inner.put(k, v).await {
+//         //     // super::PutResult::Put,
+//         //     // super::PutResult::Update,
+//         //     super::PutResult::Evicted { key, .. } => {
+//         //         super::PutResult::Evicted { key: , .. }
+//         //     },
+//         //     other => other
+
+//         // }
+//         // super::PutResult::Put
+//     }
+
+//     async fn get<'a, Q>(&'a mut self, k: &'a Q) -> Option<&'a V>
+//     where
+//         K: Borrow<Q>,
+//         Q: ToOwned<Owned = K> + Hash + Eq + Sync,
+//         // Q: Hash + Eq + Sync,
+//         // Q: ToOwned<Owned = K> + Eq + Hash + ?Sized + Clone + Sync,
+//     {
+//         self.inner.get(k).await;
+//         // self.update_freq_bin(k);
+//         let value_file = std::fs::OpenOptions::new()
+//             .read(true)
+//             .create(false)
+//             .open(self.value_path(k))
+//             .unwrap();
+
+//         let value: V = self
+//             .deser
+//             .deserialize_from(&mut std::io::BufReader::new(value_file))
+//             .unwrap();
+
+//         Some(&value)
+
+//         // .await;
+//         // self.deser.
+//         // self.values.get(k).map(|x| &x.value)
+//         // None
+//     }
+
+//     async fn get_mut<'a, Q>(&'a mut self, k: &'a Q) -> Option<&'a mut V>
+//     where
+//         K: Borrow<Q>,
+//         Q: ToOwned<Owned = K> + Eq + Hash + ?Sized + Clone + Sync,
+//     {
+//         // self.update_freq_bin(k);
+//         // self.values.get_mut(k).map(|x| &mut x.value)
+//         None
+//     }
+
+//     async fn peek<'a, Q>(&'a self, k: &'a Q) -> Option<&'a V>
+//     where
+//         K: Borrow<Q>,
+//         Q: Eq + Hash + ?Sized + Sync,
+//     {
+//         // self.values.get(k).map(|x| &x.value)
+//         None
+//     }
+
+//     async fn peek_mut<'a, Q>(&'a mut self, k: &'a Q) -> Option<&'a mut V>
+//     where
+//         K: Borrow<Q>,
+//         Q: Eq + Hash + ?Sized + Sync,
+//     {
+//         // self.values.get_mut(k).map(|x| &mut x.value)
+//         None
+//     }
+
+//     async fn contains<Q>(&self, k: &Q) -> bool
+//     where
+//         K: Borrow<Q>,
+//         Q: Eq + Hash + ?Sized + Sync,
+//     {
+//         // self.values.contains_key(k)
+//         false
+//     }
+
+//     async fn remove<Q>(&mut self, k: &Q) -> Option<V>
+//     where
+//         K: Borrow<Q>,
+//         Q: Eq + Hash + ?Sized + Sync,
+//     {
+//         // match self.values.remove(&k) {
+//         //     Some(counter) => {
+//         //         self.freq_bin.entry(counter.count).or_default().remove(k);
+//         //         Some(counter.value)
+//         //     }
+//         //     None => None,
+//         // }
+//         None
+//     }
+
+//     async fn purge(&mut self) {
+//         // self.values.clear();
+//         // self.freq_bin.clear();
+//     }
+
+//     async fn len(&self) -> usize {
+//         // self.values.len()
+//         0
+//     }
+
+//     async fn cap(&self) -> Option<usize> {
+//         // self.capacity
+//         None
+//     }
+
+//     async fn is_empty(&self) -> bool {
+//         // self.values.is_empty()
+//         false
+//     }
+// }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cache::Cache;
+    use anyhow::Result;
+    use pretty_assertions::assert_eq;
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn get() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let msgpack = MessagePack {};
+        let mut lfu = LFU::new(dir.path(), msgpack).capacity(20);
+        // lfu.put(10, 10).await;
+        // lfu.put(20, 30).await;
+        assert_eq!(lfu.get(&10).await?, Some(10));
+        assert_eq!(lfu.get(&30).await?, None);
+        Ok(())
     }
 
-    #[inline]
-    async fn get(&self, k: &K) -> Option<FileImage> {
-        let mut lock = self.inner.write().await;
-        match lock.get(k).map(|v| v.clone()) {
-            Some(cached) => Some(cached),
-            None => {
-                // check if file exists but is not in the LFU yet
-                let path = self.path(&k);
-                match tokio::fs::File::open(&path).await {
-                    Ok(_) => {
-                        let entry = FileImage {
-                            path: path.clone(),
-                            format: guess_format(&path).unwrap_or(ImageFormat::Jpeg),
-                        };
-                        lock.put(k.to_owned(), entry.clone());
-                        Some(entry)
-                    }
-                    _ => None,
-                }
-            }
-        }
-    }
+    // #[tokio::test(flavor = "multi_thread")]
+    // async fn get_mut() {
+    //     let mut lfu = LFU::with_capacity(20);
+    //     lfu.put(10, 10).await;
+    //     lfu.put(20, 30).await;
+    //     lfu.get_mut(&10).await.map(|v| *v += 1);
+    //     assert_eq!(lfu.get(&10).await, Some(&11));
+    //     assert_eq!(lfu.get(&30).await, None);
+    // }
+
+    // #[tokio::test(flavor = "multi_thread")]
+    // async fn peek() {
+    //     let mut lfu = LFU::with_capacity(20);
+    //     lfu.put(10, 10).await;
+    //     lfu.put(20, 30).await;
+    //     assert_eq!(lfu.peek(&10).await, Some(&10));
+    //     assert_eq!(lfu.peek(&30).await, None);
+    // }
+
+    // #[tokio::test(flavor = "multi_thread")]
+    // async fn peek_mut() {
+    //     let mut lfu = LFU::with_capacity(20);
+    //     lfu.put(10, 10).await;
+    //     lfu.put(20, 30).await;
+    //     lfu.peek_mut(&10).await.map(|v| *v += 1);
+    //     assert_eq!(lfu.peek(&10).await, Some(&11));
+    //     assert_eq!(lfu.peek(&30).await, None);
+    // }
+
+    // #[tokio::test(flavor = "multi_thread")]
+    // async fn eviction() {
+    //     let mut lfu = LFU::with_capacity(2);
+    //     lfu.put(1, 10).await;
+    //     lfu.put(2, 20).await;
+    //     lfu.put(3, 30).await;
+    //     assert_eq!(lfu.get(&1).await, None);
+    //     assert_eq!(lfu.get(&2).await, Some(&20));
+    //     assert_eq!(lfu.get(&3).await, Some(&30));
+    // }
+
+    // #[tokio::test(flavor = "multi_thread")]
+    // async fn key_frequency_update_put() {
+    //     let mut lfu = LFU::with_capacity(2);
+    //     lfu.put(1, 10).await;
+    //     lfu.put(2, 20).await;
+    //     // cache is at max capacity
+    //     // this will evict 2, not 1
+    //     lfu.put(1, 30).await;
+    //     lfu.put(3, 30).await;
+    //     assert_eq!(lfu.get(&2).await, None);
+    //     assert_eq!(lfu.get(&1).await, Some(&30));
+    //     assert_eq!(lfu.get(&3).await, Some(&30));
+    // }
+
+    // #[tokio::test(flavor = "multi_thread")]
+    // async fn key_frequency_update_get() {
+    //     let mut lfu = LFU::with_capacity(2);
+    //     lfu.put(1, 10).await;
+    //     lfu.put(2, 20).await;
+    //     // cache is at max capacity
+    //     // increase frequency of 1
+    //     lfu.get(&1).await;
+    //     // this will evict 2, not 1
+    //     lfu.put(3, 30).await;
+    //     assert_eq!(lfu.get(&2).await, None);
+    //     assert_eq!(lfu.get(&1).await, Some(&10));
+    //     assert_eq!(lfu.get(&3).await, Some(&30));
+    // }
+
+    // #[tokio::test(flavor = "multi_thread")]
+    // async fn key_frequency_update_get_mut() {
+    //     let mut lfu = LFU::with_capacity(2);
+    //     lfu.put(1, 10).await;
+    //     lfu.put(2, 20).await;
+    //     // cache is at max capacity
+    //     // increase frequency of 1
+    //     lfu.get_mut(&1).await.map(|v| *v += 1);
+    //     // this will evict 2, not 1
+    //     lfu.put(3, 30).await;
+    //     assert_eq!(lfu.get(&2).await, None);
+    //     assert_eq!(lfu.get(&1).await, Some(&11));
+    //     assert_eq!(lfu.get(&3).await, Some(&30));
+    // }
+
+    // #[tokio::test(flavor = "multi_thread")]
+    // async fn key_frequency_update_peek() {
+    //     let mut lfu = LFU::with_capacity(2);
+    //     lfu.put(1, 10).await;
+    //     lfu.put(2, 20).await;
+    //     // cache is at max capacity
+    //     lfu.peek(&1).await;
+    //     lfu.peek(&1).await;
+    //     assert_eq!(lfu.peek(&1).await, Some(&10));
+    //     // this will evict 1, not 2
+    //     lfu.put(3, 30).await;
+    //     assert_eq!(lfu.get(&1).await, None);
+    //     assert_eq!(lfu.get(&2).await, Some(&20));
+    //     assert_eq!(lfu.get(&3).await, Some(&30));
+    // }
+
+    // #[tokio::test(flavor = "multi_thread")]
+    // async fn key_frequency_update_peek_mut() {
+    //     let mut lfu = LFU::with_capacity(2);
+    //     lfu.put(1, 10).await;
+    //     lfu.put(2, 20).await;
+    //     // cache is at max capacity
+    //     lfu.peek_mut(&1).await.map(|v| *v += 1);
+    //     lfu.peek_mut(&1).await.map(|v| *v += 1);
+    //     assert_eq!(lfu.peek(&1).await, Some(&12));
+    //     // this will evict 1, not 2
+    //     lfu.put(3, 30).await;
+    //     assert_eq!(lfu.get(&1).await, None);
+    //     assert_eq!(lfu.get(&2).await, Some(&20));
+    //     assert_eq!(lfu.get(&3).await, Some(&30));
+    // }
+
+    // #[tokio::test(flavor = "multi_thread")]
+    // async fn deletion() {
+    //     let mut lfu = LFU::with_capacity(2);
+    //     lfu.put(1, 10).await;
+    //     lfu.put(2, 20).await;
+    //     assert_eq!(lfu.len().await, 2);
+    //     lfu.remove(&1).await;
+    //     assert_eq!(lfu.len().await, 1);
+    //     assert_eq!(lfu.get(&1).await, None);
+    //     lfu.put(3, 30).await;
+    //     lfu.put(4, 40).await;
+    //     assert_eq!(lfu.get(&2).await, None);
+    //     assert_eq!(lfu.get(&3).await, Some(&30));
+    // }
+
+    // #[tokio::test(flavor = "multi_thread")]
+    // async fn duplicates() {
+    //     let mut lfu = LFU::with_capacity(2);
+    //     lfu.put(1, 10).await;
+    //     lfu.put(1, 20).await;
+    //     lfu.put(1, 30).await;
+    //     lfu.put(5, 50).await;
+
+    //     assert_eq!(lfu.get(&1).await, Some(&30));
+    //     assert_eq!(lfu.len().await, 2);
+    // }
+
+    // #[tokio::test(flavor = "multi_thread")]
+    // async fn purge() {
+    //     let mut lfu = LFU::with_capacity(2);
+    //     assert!(lfu.is_empty().await);
+
+    //     lfu.put(1, 10).await;
+    //     assert!(!lfu.is_empty().await);
+    //     assert_eq!(lfu.len().await, 1);
+    //     lfu.put(1, 20).await;
+    //     assert!(!lfu.is_empty().await);
+    //     assert_eq!(lfu.len().await, 1);
+    //     lfu.put(2, 20).await;
+    //     assert!(!lfu.is_empty().await);
+    //     assert_eq!(lfu.len().await, 2);
+
+    //     // begin to purge
+    //     assert_eq!(lfu.get(&1).await, Some(&20));
+    //     assert_eq!(lfu.get(&2).await, Some(&20));
+    //     lfu.purge().await;
+    //     assert!(lfu.is_empty().await);
+    //     assert_eq!(lfu.len().await, 0);
+    //     assert_eq!(lfu.get(&1).await, None);
+    //     assert_eq!(lfu.get(&2).await, None);
+    // }
 }
