@@ -1,9 +1,161 @@
+use super::deser;
 use super::Cache;
 use async_trait::async_trait;
 use std::borrow::Borrow;
 use std::hash::Hash;
 use std::marker::PhantomData;
 use std::path::PathBuf;
+
+#[derive(Default, Debug)]
+pub struct Filesystem<K, V, DS> {
+    // values: HashMap<K, V>,
+    key: PhantomData<K>,
+    value: PhantomData<V>,
+    deser: DS,
+    path: PathBuf,
+}
+
+impl<K, V, DS> Filesystem<K, V, DS> {
+    pub fn new(path: impl Into<PathBuf>, deser: DS) -> Self {
+        Self {
+            // values: HashMap::new(),
+            key: PhantomData,
+            value: PhantomData,
+            deser,
+            path: path.into(),
+        }
+    }
+
+    pub fn value_path<'a, Q>(&self, key: &'a Q) -> PathBuf
+    where
+        K: Borrow<Q>,
+        Q: Hash + ?Sized,
+    {
+        self.path.join(Self::key_hash(key)).with_extension("value")
+    }
+
+    pub fn key_path<'a, Q>(&self, key: &'a Q) -> PathBuf
+    where
+        K: Borrow<Q>,
+        Q: Hash,
+    {
+        self.path.join(Self::key_hash(key)).with_extension("key")
+    }
+
+    pub fn key_hash<'a, Q>(key: &'a Q) -> String
+    where
+        K: Borrow<Q>,
+        // Q: ToOwned<Owned = K> + Hash + Eq + Sync,
+        Q: Hash + ?Sized, //  + Eq + Sync,
+    {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        key.hash(&mut hasher);
+        // hasher.finish()
+        // use sha2::Digest;
+        // let mut hasher = sha2::Sha256::new();
+        // key.hash(&mut hasher);
+        // hasher.update(key);
+        // std::io::copy(&mut file, &mut hasher)?;
+        // format!("{:X}", hasher.finalize())
+        format!("{:X}", hasher.finish())
+    }
+}
+
+#[async_trait]
+impl<'de, K, V, DS> super::Backend<K, V> for Filesystem<K, V, DS>
+where
+    V: serde::Deserialize<'de> + Send + Sync,
+    K: serde::Deserialize<'de> + Eq + Hash + Send + Sync,
+    DS: deser::Serialize<K>
+        + deser::Serialize<V>
+        + deser::Deserialize<K>
+        + deser::Deserialize<V>
+        + Send
+        + Sync,
+{
+    async fn insert<'a>(&'a mut self, k: K, v: V) {
+        let value_file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(self.value_path(&k))
+            .unwrap();
+        self.deser
+            .serialize_to(&v, &mut std::io::BufWriter::new(value_file))
+            .unwrap();
+
+        let key_file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(self.key_path(&k))
+            .unwrap();
+        self.deser
+            .serialize_to(&k, &mut std::io::BufWriter::new(key_file))
+            .unwrap();
+    }
+
+    // async fn get<'a, Q>(&'a self, k: &'a Q) -> Option<&'a V>
+    async fn get<'a, Q>(&'a self, k: &'a Q) -> Option<V>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized + Sync,
+    {
+        let value_file = match std::fs::OpenOptions::new()
+            .read(true)
+            .create(false)
+            .open(self.value_path(k))
+        {
+            Ok(file) => file,
+            _ => return None,
+            // Err(err) => match err.kind() {
+            //     std::io::ErrorKind::NotFound => return Ok(None),
+            //     _ => return Err(super::Error::Io(err)),
+            // },
+        };
+
+        let value: V = self
+            .deser
+            .deserialize_from(&mut std::io::BufReader::new(value_file))
+            .unwrap();
+
+        Some(value)
+    }
+
+    // async fn get_mut<'a, Q>(&'a mut self, k: &'a Q) -> Option<&'a mut V>
+    // where
+    //     K: Borrow<Q>,
+    //     Q: Eq + Hash + ?Sized + Sync,
+    // {
+    //     // self.values.get_mut(k)
+    //     None
+    // }
+
+    async fn clear(&mut self) {
+        // self.values.clear();
+    }
+
+    async fn remove<Q>(&mut self, k: &Q) -> Option<V>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized + Sync,
+    {
+        // self.values.remove(k)
+        None
+    }
+
+    async fn len(&self) -> usize {
+        0
+        // self.values.len()
+    }
+
+    async fn is_empty(&self) -> bool {
+        // self.values.is_empty()
+        true
+    }
+}
 
 // #[derive(thiserror::Error, Debug)]
 // pub enum Error<S, D>
@@ -28,131 +180,80 @@ use std::path::PathBuf;
 //     // Invalid(#[from] crate::image::Error),
 // }
 
-// // #[async_trait]
-// pub trait DeserializeAsync<V> {
-//     type Error: std::error::Error;
-
-//     fn deserialize_from<R>(&self, reader: &mut R) -> Result<V, Self::Error>
-//     where
-//         // V: serde::Deserialize<'de>,
-//         R: tokio::io::AsyncRead;
-// }
-
-// pub trait SerializeAsync<V> {
-//     type Error: std::error::Error;
-
-//     fn serialize_to<W>(&self, value: &V, writer: &mut W) -> Result<(), Self::Error>
-//     where
-//         //     V: serde::Serialize,
-//         W: tokio::io::AsyncWrite;
-// }
-
-// pub struct MessagePack {}
-
-// impl<'de, V> Deserialize<V> for MessagePack
+// pub struct LFU<K, V, DS>
 // where
-//     V: serde::Deserialize<'de>,
+//     K: Hash + Eq,
 // {
-//     type Error = rmp_serde::decode::Error;
+//     inner: super::memory::LFU<K, ()>,
+//     deser: DS,
+//     path: PathBuf,
+//     value: PhantomData<V>,
+// }
 
-//     fn deserialize_from<R>(&self, reader: &mut R) -> Result<V, Error<Self::Error>>
+// impl<K, V, DS> LFU<K, V, DS>
+// where
+//     K: Hash + Eq,
+// {
+//     pub fn new(path: impl Into<PathBuf>, deser: DS) -> Self {
+//         let inner = super::memory::LFU::with_capacity(None);
+//         Self {
+//             value: PhantomData,
+//             path: path.into(),
+//             inner,
+//             deser,
+//         }
+//     }
+
+//     pub fn capacity(self, capacity: impl Into<Option<usize>>) -> Self {
+//         let inner = super::memory::LFU::with_capacity(capacity.into());
+//         Self { inner, ..self }
+//     }
+
+//     // async pub fn value_file_async<'a, Q>(&self, key: &'a Q) -> PathBuf
+//     // where
+//     //     K: Borrow<Q>,
+//     //     Q: Hash,
+//     // {
+//     //     tokio::fs::OpenOptions::new().read(true)
+//     //     // self.path.join(Self::key_hash(key)).with_extension(".value")
+//     // }
+
+//     pub fn value_path<'a, Q>(&self, key: &'a Q) -> PathBuf
 //     where
-//         R: std::io::Read,
+//         K: Borrow<Q>,
+//         Q: Hash,
 //     {
-//         V::deserialize(&mut rmp_serde::Deserializer::new(reader)).map_err(Error::Test)
+//         self.path.join(Self::key_hash(key)).with_extension(".value")
+//     }
+
+//     pub fn key_path<'a, Q>(&self, key: &'a Q) -> PathBuf
+//     where
+//         K: Borrow<Q>,
+//         Q: Hash,
+//     {
+//         self.path.join(Self::key_hash(key)).with_extension(".key")
+//     }
+
+//     pub fn key_hash<'a, Q>(key: &'a Q) -> String
+//     where
+//         K: Borrow<Q>,
+//         // Q: ToOwned<Owned = K> + Hash + Eq + Sync,
+//         Q: Hash, //  + Eq + Sync,
+//     {
+//         use std::collections::hash_map::DefaultHasher;
+//         use std::hash::{Hash, Hasher};
+//         let mut hasher = DefaultHasher::new();
+//         key.hash(&mut hasher);
+//         // hasher.finish()
+//         // use sha2::Digest;
+//         // let mut hasher = sha2::Sha256::new();
+//         // key.hash(&mut hasher);
+//         // hasher.update(key);
+//         // std::io::copy(&mut file, &mut hasher)?;
+//         // format!("{:X}", hasher.finalize())
+//         format!("{:X}", hasher.finish())
 //     }
 // }
-
-// impl<V> Serialize<V> for MessagePack
-// where
-//     V: serde::Serialize + Sync,
-// {
-//     type Error = rmp_serde::encode::Error;
-
-//     fn serialize_to<W>(&self, value: &V, writer: &mut W) -> Result<(), Error<Self::Error>>
-//     where
-//         W: std::io::Write,
-//     {
-//         value
-//             .serialize(&mut rmp_serde::Serializer::new(writer))
-//             .map_err(Error::Test)
-//     }
-// }
-
-pub struct LFU<K, V, DS>
-where
-    K: Hash + Eq,
-{
-    inner: super::memory::LFU<K, ()>,
-    deser: DS,
-    path: PathBuf,
-    value: PhantomData<V>,
-}
-
-impl<K, V, DS> LFU<K, V, DS>
-where
-    K: Hash + Eq,
-{
-    pub fn new(path: impl Into<PathBuf>, deser: DS) -> Self {
-        let inner = super::memory::LFU::with_capacity(None);
-        Self {
-            value: PhantomData,
-            path: path.into(),
-            inner,
-            deser,
-        }
-    }
-
-    pub fn capacity(self, capacity: impl Into<Option<usize>>) -> Self {
-        let inner = super::memory::LFU::with_capacity(capacity.into());
-        Self { inner, ..self }
-    }
-
-    // async pub fn value_file_async<'a, Q>(&self, key: &'a Q) -> PathBuf
-    // where
-    //     K: Borrow<Q>,
-    //     Q: Hash,
-    // {
-    //     tokio::fs::OpenOptions::new().read(true)
-    //     // self.path.join(Self::key_hash(key)).with_extension(".value")
-    // }
-
-    pub fn value_path<'a, Q>(&self, key: &'a Q) -> PathBuf
-    where
-        K: Borrow<Q>,
-        Q: Hash,
-    {
-        self.path.join(Self::key_hash(key)).with_extension(".value")
-    }
-
-    pub fn key_path<'a, Q>(&self, key: &'a Q) -> PathBuf
-    where
-        K: Borrow<Q>,
-        Q: Hash,
-    {
-        self.path.join(Self::key_hash(key)).with_extension(".key")
-    }
-
-    pub fn key_hash<'a, Q>(key: &'a Q) -> String
-    where
-        K: Borrow<Q>,
-        // Q: ToOwned<Owned = K> + Hash + Eq + Sync,
-        Q: Hash, //  + Eq + Sync,
-    {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        key.hash(&mut hasher);
-        // hasher.finish()
-        // use sha2::Digest;
-        // let mut hasher = sha2::Sha256::new();
-        // key.hash(&mut hasher);
-        // hasher.update(key);
-        // std::io::copy(&mut file, &mut hasher)?;
-        // format!("{:X}", hasher.finalize())
-        format!("{:X}", hasher.finish())
-    }
-}
 
 // #[async_trait]
 // pub trait Get<K, V> {
@@ -164,39 +265,39 @@ where
 // }
 
 // #[async_trait]
-impl<'de, K, V, DS> LFU<K, V, DS>
-where
-    K: Clone + Hash + Eq + Send + Sync,
-    V: Send + Sync,
-    DS: Deserialize<V> + Send + Sync,
-{
-    async fn get<'a, Q>(&'a mut self, k: &'a Q) -> Result<Option<V>, Error<DS::Error>>
-    where
-        K: Borrow<Q>,
-        Q: ToOwned<Owned = K> + Hash + Eq + Sync,
-    {
-        self.inner.get(k).await;
-        // self.update_freq_bin(k);
-        let value_file = match std::fs::OpenOptions::new()
-            .read(true)
-            .create(false)
-            .open(self.value_path(k))
-        {
-            Ok(file) => file,
-            Err(err) => match err.kind() {
-                std::io::ErrorKind::NotFound => return Ok(None),
-                _ => return Err(Error::Io(err)),
-            },
-        };
+// impl<'de, K, V, DS> LFU<K, V, DS>
+// where
+//     K: Clone + Hash + Eq + Send + Sync,
+//     V: Send + Sync,
+//     DS: Deserialize<V> + Send + Sync,
+// {
+//     async fn get<'a, Q>(&'a mut self, k: &'a Q) -> Result<Option<V>, Error<DS::Error>>
+//     where
+//         K: Borrow<Q>,
+//         Q: ToOwned<Owned = K> + Hash + Eq + Sync,
+//     {
+//         self.inner.get(k).await;
+//         // self.update_freq_bin(k);
+//         let value_file = match std::fs::OpenOptions::new()
+//             .read(true)
+//             .create(false)
+//             .open(self.value_path(k))
+//         {
+//             Ok(file) => file,
+//             Err(err) => match err.kind() {
+//                 std::io::ErrorKind::NotFound => return Ok(None),
+//                 _ => return Err(Error::Io(err)),
+//             },
+//         };
 
-        let value: V = self
-            .deser
-            .deserialize_from(&mut std::io::BufReader::new(value_file))
-            .unwrap();
+//         let value: V = self
+//             .deser
+//             .deserialize_from(&mut std::io::BufReader::new(value_file))
+//             .unwrap();
 
-        Ok(Some(value))
-    }
-}
+//         Ok(Some(value))
+//     }
+// }
 
 // #[async_trait]
 // impl<'de, K, V, DS> Get<K, V> for LFU<K, V, DS>
@@ -403,19 +504,22 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::Cache;
+    use crate::cache::{deser, Cache, LFU};
     use anyhow::Result;
     use pretty_assertions::assert_eq;
 
     #[tokio::test(flavor = "multi_thread")]
     async fn get() -> Result<()> {
-        let dir = tempfile::tempdir()?;
-        let msgpack = MessagePack {};
-        let mut lfu = LFU::new(dir.path(), msgpack).capacity(20);
-        // lfu.put(10, 10).await;
-        // lfu.put(20, 30).await;
-        assert_eq!(lfu.get(&10).await?, Some(10));
-        assert_eq!(lfu.get(&30).await?, None);
+        // let dir = tempfile::tempdir()?.path();
+        let dir = "/Users/roman/dev/imop/tmp";
+        let msgpack = deser::MessagePack {};
+        let s = Filesystem::new(dir, msgpack);
+        let mut lfu = LFU::new(s).with_capacity(20);
+        lfu.put(10, 10).await;
+        lfu.put(20, 30).await;
+        dbg!(&lfu);
+        assert_eq!(lfu.get(&10).await, Some(10));
+        assert_eq!(lfu.get(&30).await, None);
         Ok(())
     }
 

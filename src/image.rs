@@ -34,14 +34,6 @@ pub struct Optimizations {
     pub format: Option<Format>,
 }
 
-#[derive(Deserialize, Debug, Clone)]
-pub struct External {
-    #[serde(default)]
-    #[serde(deserialize_with = "url_from_string")]
-    /// URL to the external image
-    pub image: Option<reqwest::Url>,
-}
-
 impl Optimizations {
     #[must_use]
     #[inline]
@@ -97,20 +89,6 @@ where
                 .map_err(serde::de::Error::custom)?;
             Ok(Some(fmt))
         }
-    }
-}
-
-#[inline]
-fn url_from_string<'de, D>(deserializer: D) -> Result<Option<reqwest::Url>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let s: Option<Cow<'de, str>> = Option::deserialize(deserializer)?;
-    match s {
-        None => Ok(None),
-        Some(ref s) => Ok(Some(
-            reqwest::Url::parse(s).map_err(serde::de::Error::custom)?,
-        )),
     }
 }
 
@@ -320,7 +298,7 @@ impl Image {
     }
 
     // #[inline]
-    // pub fn encode(&self, format: ImageFormat, quality: Option<u8>) -> Result<EncodedImage, Error> {
+    // pub fn encode(&self, format: Format, quality: Option<u8>) -> Result<EncodedImage, Error> {
     //     let mut buffer = std::io::Cursor::new(Vec::new());
     //     self.encode_to(&mut buffer, format, quality)?;
     //     Ok(EncodedImage {

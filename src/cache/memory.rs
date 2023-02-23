@@ -27,28 +27,29 @@ impl<K, V> Memory<K, V> {
 #[async_trait]
 impl<K, V> super::Backend<K, V> for Memory<K, V>
 where
-    V: Send + Sync,
+    V: Send + Sync + Clone,
     K: Eq + Hash + Send + Sync,
 {
     async fn insert<'a>(&'a mut self, k: K, v: V) {
         self.values.insert(k, v);
     }
 
-    async fn get<'a, Q>(&'a self, k: &'a Q) -> Option<&'a V>
+    // async fn get<'a, Q>(&'a self, k: &'a Q) -> Option<&'a V>
+    async fn get<'a, Q>(&'a self, k: &'a Q) -> Option<V>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized + Sync,
     {
-        self.values.get(k)
+        self.values.get(k).cloned()
     }
 
-    async fn get_mut<'a, Q>(&'a mut self, k: &'a Q) -> Option<&'a mut V>
-    where
-        K: Borrow<Q>,
-        Q: Eq + Hash + ?Sized + Sync,
-    {
-        self.values.get_mut(k)
-    }
+    // async fn get_mut<'a, Q>(&'a mut self, k: &'a Q) -> Option<&'a mut V>
+    // where
+    //     K: Borrow<Q>,
+    //     Q: Eq + Hash + ?Sized + Sync,
+    // {
+    //     self.values.get_mut(k)
+    // }
 
     async fn clear(&mut self) {
         self.values.clear();
@@ -70,5 +71,3 @@ where
         self.values.is_empty()
     }
 }
-
-

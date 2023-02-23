@@ -1,3 +1,6 @@
+pub mod msgpack;
+pub use msgpack::MessagePack;
+
 use async_trait::async_trait;
 use std::hash::Hash;
 
