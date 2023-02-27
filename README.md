@@ -23,6 +23,8 @@ cargo run --example basic -- --images ./data --cache ./tmp
 You can use
 
 #### TODO
+- implement streaming cache trait that can stream in and out of the cache
+
 - implement cache access trait (size, get, put)
 - how to add persistence?
     - none for the memory version

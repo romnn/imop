@@ -215,6 +215,32 @@ mod tests {
     use super::*;
     use crate::cache::{Cache, Memory};
 
+    macro_rules! test_lfu_backend {
+        ($backend:ident, $factory:expr) => {
+            paste::item! {
+                #[tokio::test(flavor = "multi_thread")]
+                pub async fn [< get _ $backend _ backend  >]() {
+                    let lfu = LFU::new($factory);
+                    let mut lfu = lfu.with_capacity(20);
+                    lfu.put(10, 10).await;
+                    lfu.put(20, 30).await;
+                    dbg!(&lfu);
+                    assert_eq!(lfu.get(&10).await, Some(10));
+                    assert_eq!(lfu.get(&30).await, None);
+                }
+            }
+        };
+    }
+
+    // fn build_memory_backend() -> Memory {
+    // }
+
+    test_lfu_backend!(memory, Memory::new());
+    // test_lfu_backend!(fs, Memory::new());
+    // let dir = "/Users/roman/dev/imop/tmp";
+    // let msgpack = deser::MessagePack {};
+    // let s = Filesystem::new(dir, msgpack);
+
     #[tokio::test(flavor = "multi_thread")]
     async fn get() {
         let s = Memory::new();
@@ -226,17 +252,6 @@ mod tests {
         assert_eq!(lfu.get(&30).await, None);
     }
 
-    // #[tokio::test(flavor = "multi_thread")]
-    // async fn get_mut() {
-    //     let s = Memory::new();
-    //     let mut lfu = LFU::new(s).with_capacity(20);
-    //     lfu.put(10, 10).await;
-    //     lfu.put(20, 30).await;
-    //     lfu.get_mut(&10).await.map(|v| *v += 1);
-    //     assert_eq!(lfu.get(&10).await, Some(&11));
-    //     assert_eq!(lfu.get(&30).await, None);
-    // }
-
     #[tokio::test(flavor = "multi_thread")]
     async fn peek() {
         let s = Memory::new();
@@ -246,17 +261,6 @@ mod tests {
         assert_eq!(lfu.peek(&10).await, Some(10));
         assert_eq!(lfu.peek(&30).await, None);
     }
-
-    // #[tokio::test(flavor = "multi_thread")]
-    // async fn peek_mut() {
-    //     let s = Memory::new();
-    //     let mut lfu = LFU::new(s).with_capacity(20);
-    //     lfu.put(10, 10).await;
-    //     lfu.put(20, 30).await;
-    //     lfu.peek_mut(&10).await.map(|v| *v += 1);
-    //     assert_eq!(lfu.peek(&10).await, Some(&11));
-    //     assert_eq!(lfu.peek(&30).await, None);
-    // }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn eviction() {
@@ -301,22 +305,6 @@ mod tests {
         assert_eq!(lfu.get(&3).await, Some(30));
     }
 
-    // #[tokio::test(flavor = "multi_thread")]
-    // async fn key_frequency_update_get_mut() {
-    //     let s = Memory::new();
-    //     let mut lfu = LFU::new(s).with_capacity(2);
-    //     lfu.put(1, 10).await;
-    //     lfu.put(2, 20).await;
-    //     // cache is at max capacity
-    //     // increase frequency of 1
-    //     lfu.get_mut(&1).await.map(|v| *v += 1);
-    //     // this will evict 2, not 1
-    //     lfu.put(3, 30).await;
-    //     assert_eq!(lfu.get(&2).await, None);
-    //     assert_eq!(lfu.get(&1).await, Some(&11));
-    //     assert_eq!(lfu.get(&3).await, Some(&30));
-    // }
-
     #[tokio::test(flavor = "multi_thread")]
     async fn key_frequency_update_peek() {
         let s = Memory::new();
@@ -333,23 +321,6 @@ mod tests {
         assert_eq!(lfu.get(&2).await, Some(20));
         assert_eq!(lfu.get(&3).await, Some(30));
     }
-
-    // #[tokio::test(flavor = "multi_thread")]
-    // async fn key_frequency_update_peek_mut() {
-    //     let s = Memory::new();
-    //     let mut lfu = LFU::new(s).with_capacity(2);
-    //     lfu.put(1, 10).await;
-    //     lfu.put(2, 20).await;
-    //     // cache is at max capacity
-    //     lfu.peek_mut(&1).await.map(|v| *v += 1);
-    //     lfu.peek_mut(&1).await.map(|v| *v += 1);
-    //     assert_eq!(lfu.peek(&1).await, Some(&12));
-    //     // this will evict 1, not 2
-    //     lfu.put(3, 30).await;
-    //     assert_eq!(lfu.get(&1).await, None);
-    //     assert_eq!(lfu.get(&2).await, Some(&20));
-    //     assert_eq!(lfu.get(&3).await, Some(&30));
-    // }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn deletion() {
@@ -406,6 +377,7 @@ mod tests {
         assert_eq!(lfu.get(&2).await, None);
     }
 }
+
 // use super::{Cache, PutResult};
 // use linked_hash_set::LinkedHashSet;
 // use std::borrow::Borrow;

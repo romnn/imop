@@ -34,7 +34,6 @@ where
         self.values.insert(k, v);
     }
 
-    // async fn get<'a, Q>(&'a self, k: &'a Q) -> Option<&'a V>
     async fn get<'a, Q>(&'a self, k: &'a Q) -> Option<V>
     where
         K: Borrow<Q>,
@@ -42,14 +41,6 @@ where
     {
         self.values.get(k).cloned()
     }
-
-    // async fn get_mut<'a, Q>(&'a mut self, k: &'a Q) -> Option<&'a mut V>
-    // where
-    //     K: Borrow<Q>,
-    //     Q: Eq + Hash + ?Sized + Sync,
-    // {
-    //     self.values.get_mut(k)
-    // }
 
     async fn clear(&mut self) {
         self.values.clear();

@@ -58,7 +58,8 @@ async fn fetch_and_serve_file(
     src: ImageSource,
     // cache: Arc<FileSystemImageCache<CacheKey>>,
     // cache: Arc<C>,
-) -> Result<File, Rejection> {
+) -> Result<impl warp::Reply, Rejection> {
+    // ) -> Result<File, Rejection> {
     imop::debug!("source = {:?}", &src);
     imop::debug!("optimizations = {:?}", &optimizations);
 
@@ -87,14 +88,32 @@ async fn fetch_and_serve_file(
                 .unwrap_or(ImageFormat::Jpeg);
 
             img.resize(optimizations.bounds());
+
+            let mut buffer = Vec::new();
+            let mut cursor = std::io::Cursor::new(buffer);
+            // let mut writer = std::io::BufWriter::new(cursor);
+
             let encoded = img
-                .encode(target_format, optimizations.quality)
+                .encode_to(&mut cursor, target_format, optimizations.quality)
                 .map_err(Error::from)?;
 
-            Ok(File {
-                resp: encoded.into_response(),
-                origin: Origin::Url(url),
-            })
+            // let file_stream = stream(file, (start, end), Some(buf_size));
+            // let body = hyper::Body::wrap_stream(file_stream);
+
+            // let mut resp = reply::Response::new(body);
+
+            // let body = warp::hyper::Body::wrap_stream(writer);
+            let body = warp::hyper::body::Bytes::from(cursor.into_inner());
+            let mut resp = warp::reply::Response::new(body.into());
+            // warp::hyper::body::Body::from(writer).into());
+            // warp::reply::Response::new(warp::hyper::body::Bytes::from(writer).into());
+
+            // Ok(File {
+            //     resp: encoded.into_response(),
+            //     origin: Origin::Url(url),
+            // })
+            Ok(resp)
+            // Err(warp::reject::reject())
         }
         None => Err(warp::reject::reject()),
     }

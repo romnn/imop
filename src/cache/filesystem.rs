@@ -1,14 +1,16 @@
 use super::deser;
 use super::Cache;
 use async_trait::async_trait;
+use bytes::Bytes;
+use futures::{Stream, StreamExt};
 use std::borrow::Borrow;
 use std::hash::Hash;
 use std::marker::PhantomData;
 use std::path::PathBuf;
+use std::pin::Pin;
 
 #[derive(Default, Debug)]
 pub struct Filesystem<K, V, DS> {
-    // values: HashMap<K, V>,
     key: PhantomData<K>,
     value: PhantomData<V>,
     deser: DS,
@@ -18,7 +20,6 @@ pub struct Filesystem<K, V, DS> {
 impl<K, V, DS> Filesystem<K, V, DS> {
     pub fn new(path: impl Into<PathBuf>, deser: DS) -> Self {
         Self {
-            // values: HashMap::new(),
             key: PhantomData,
             value: PhantomData,
             deser,
@@ -45,8 +46,7 @@ impl<K, V, DS> Filesystem<K, V, DS> {
     pub fn key_hash<'a, Q>(key: &'a Q) -> String
     where
         K: Borrow<Q>,
-        // Q: ToOwned<Owned = K> + Hash + Eq + Sync,
-        Q: Hash + ?Sized, //  + Eq + Sync,
+        Q: Hash + ?Sized,
     {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
@@ -75,7 +75,7 @@ where
         + Send
         + Sync,
 {
-    async fn insert<'a>(&'a mut self, k: K, v: V) {
+    async fn put<'a>(&'a mut self, k: K, v: V) {
         let value_file = std::fs::OpenOptions::new()
             .write(true)
             .create(true)
@@ -97,7 +97,6 @@ where
             .unwrap();
     }
 
-    // async fn get<'a, Q>(&'a self, k: &'a Q) -> Option<&'a V>
     async fn get<'a, Q>(&'a self, k: &'a Q) -> Option<V>
     where
         K: Borrow<Q>,
@@ -109,11 +108,11 @@ where
             .open(self.value_path(k))
         {
             Ok(file) => file,
-            _ => return None,
-            // Err(err) => match err.kind() {
-            //     std::io::ErrorKind::NotFound => return Ok(None),
-            //     _ => return Err(super::Error::Io(err)),
-            // },
+            // _ => return None,
+            Err(err) => match err.kind() {
+                std::io::ErrorKind::NotFound => return Ok(None),
+                _ => return Err(super::Error::Io(err)),
+            },
         };
 
         let value: V = self
@@ -124,17 +123,8 @@ where
         Some(value)
     }
 
-    // async fn get_mut<'a, Q>(&'a mut self, k: &'a Q) -> Option<&'a mut V>
-    // where
-    //     K: Borrow<Q>,
-    //     Q: Eq + Hash + ?Sized + Sync,
-    // {
-    //     // self.values.get_mut(k)
-    //     None
-    // }
-
     async fn clear(&mut self) {
-        // self.values.clear();
+        // remove all files
     }
 
     async fn remove<Q>(&mut self, k: &Q) -> Option<V>
@@ -142,19 +132,35 @@ where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized + Sync,
     {
-        // self.values.remove(k)
+        // remove single file
         None
     }
 
     async fn len(&self) -> usize {
         0
-        // self.values.len()
+        // all values in directory? or keep track of the size?
     }
 
     async fn is_empty(&self) -> bool {
-        // self.values.is_empty()
-        true
+        self.len().await < 0
     }
+}
+
+#[async_trait]
+pub trait StreamingBackend<K> {
+    async fn put<'a>(
+        &'a mut self,
+        k: K,
+        v: Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>>,
+    );
+
+    async fn get<'a, Q>(
+        &'a self,
+        k: &'a Q,
+    ) -> Option<Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>>>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized + Sync;
 }
 
 // #[derive(thiserror::Error, Debug)]
@@ -333,6 +339,33 @@ where
 //         //     .unwrap();
 
 //         // Ok(Some(value))
+//     }
+// }
+
+// #[async_trait]
+// impl<'de, K, V, DS> super::StreamingCache<K> for LFU<K, V, DS>
+// where
+//     K: serde::Serialize + Clone + Hash + Eq + Send + Sync,
+//     V: serde::Serialize + serde::Deserialize<'de> + Send + Sync,
+//     DS: Serialize<K> + Deserialize<K> + Serialize<V> + Deserialize<V> + Send + Sync,
+// {
+//     async fn put(
+//         &mut self,
+//         k: K,
+//         v: Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>>,
+//     ) -> super::PutResult {
+//         super::PutResult::Update
+//     }
+
+//     async fn get<'a, Q>(
+//         &'a mut self,
+//         k: &'a Q,
+//     ) -> Option<Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>>>
+//     where
+//         K: Borrow<Q>,
+//         Q: ToOwned<Owned = K> + Hash + Eq + Sync,
+//     {
+//         None
 //     }
 // }
 
@@ -523,37 +556,24 @@ mod tests {
         Ok(())
     }
 
-    // #[tokio::test(flavor = "multi_thread")]
-    // async fn get_mut() {
-    //     let mut lfu = LFU::with_capacity(20);
-    //     lfu.put(10, 10).await;
-    //     lfu.put(20, 30).await;
-    //     lfu.get_mut(&10).await.map(|v| *v += 1);
-    //     assert_eq!(lfu.get(&10).await, Some(&11));
-    //     assert_eq!(lfu.get(&30).await, None);
-    // }
-
-    // #[tokio::test(flavor = "multi_thread")]
-    // async fn peek() {
-    //     let mut lfu = LFU::with_capacity(20);
-    //     lfu.put(10, 10).await;
-    //     lfu.put(20, 30).await;
-    //     assert_eq!(lfu.peek(&10).await, Some(&10));
-    //     assert_eq!(lfu.peek(&30).await, None);
-    // }
-
-    // #[tokio::test(flavor = "multi_thread")]
-    // async fn peek_mut() {
-    //     let mut lfu = LFU::with_capacity(20);
-    //     lfu.put(10, 10).await;
-    //     lfu.put(20, 30).await;
-    //     lfu.peek_mut(&10).await.map(|v| *v += 1);
-    //     assert_eq!(lfu.peek(&10).await, Some(&11));
-    //     assert_eq!(lfu.peek(&30).await, None);
-    // }
+    #[tokio::test(flavor = "multi_thread")]
+    async fn peek() {
+        // let dir = tempfile::tempdir()?.path();
+        let dir = "/Users/roman/dev/imop/tmp";
+        let msgpack = deser::MessagePack {};
+        let s = Filesystem::new(dir, msgpack);
+        let mut lfu = LFU::new(s).with_capacity(20);
+        lfu.put(10, 10).await;
+        lfu.put(20, 30).await;
+        assert_eq!(lfu.peek(&10).await, Some(10));
+        assert_eq!(lfu.peek(&30).await, None);
+    }
 
     // #[tokio::test(flavor = "multi_thread")]
     // async fn eviction() {
+    //     let dir = "/Users/roman/dev/imop/tmp";
+    //     let msgpack = deser::MessagePack {};
+    //     let s = Filesystem::new(dir, msgpack);
     //     let mut lfu = LFU::with_capacity(2);
     //     lfu.put(1, 10).await;
     //     lfu.put(2, 20).await;

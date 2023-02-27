@@ -912,6 +912,7 @@ dependencies = [
  "lru",
  "mime_guess",
  "num-traits",
+ "paste",
  "pin-project",
  "pretty_assertions",
  "reqwest",
